@@ -8,7 +8,6 @@ import {
   Plus,
   Store,
   LogOut,
-  LogIn,
   Orbit,
   Monitor,
 } from 'lucide-react';
@@ -21,7 +20,6 @@ export function AppSidebar() {
     user,
     agents,
     openMarketplace,
-    signInWithGoogle,
     signOutUser,
     t,
   } = useOrbit();
@@ -147,27 +145,15 @@ export function AppSidebar() {
             </p>
             <p className="text-[11px] text-slate-500 truncate">{user.email}</p>
           </div>
-          {user.isDemo ? (
-            <button
-              type="button"
-              onClick={signInWithGoogle}
-              title={t.sidebar.signInGoogle}
-              aria-label={t.sidebar.signInGoogle}
-              className="p-1.5 rounded-md text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
-            >
-              <LogIn className="h-4 w-4" />
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={signOutUser}
-              title={t.sidebar.signOut}
-              aria-label={t.sidebar.signOut}
-              className="p-1.5 rounded-md text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
-            >
-              <LogOut className="h-4 w-4" />
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={signOutUser}
+            title={t.sidebar.signOut}
+            aria-label={t.sidebar.signOut}
+            className="p-1.5 rounded-md text-slate-600 hover:text-red-600 hover:bg-red-50 transition-colors"
+          >
+            <LogOut className="h-4 w-4" />
+          </button>
         </div>
       </div>
     </aside>

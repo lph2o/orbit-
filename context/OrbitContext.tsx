@@ -1,7 +1,14 @@
 'use client';
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
+import {
+  createUserWithEmailAndPassword,
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  signInWithPopup,
+  signOut,
+  updateProfile,
+} from 'firebase/auth';
 import {
   collection,
   deleteDoc,
@@ -61,6 +68,7 @@ interface OrbitContextValue {
   t: Dictionary;
   user: UserProfile;
   authReady: boolean;
+  isAuthenticated: boolean;
   agents: AgentConfig[];
   routinesByAgent: Record<string, AgentRoutine[]>;
   executionsByAgent: Record<string, RoutineExecution[]>;
@@ -72,6 +80,12 @@ interface OrbitContextValue {
   activeVmModalAgentId: string | null;
   toasts: ToastItem[];
   signInWithGoogle: () => Promise<void>;
+  signInWithCredentials: (params: {
+    email: string;
+    password: string;
+    name?: string;
+    isSignUp?: boolean;
+  }) => Promise<void>;
   signOutUser: () => Promise<void>;
   addToast: (toast: Omit<ToastItem, 'id'>) => void;
   dismissToast: (id: string) => void;
@@ -116,25 +130,27 @@ const OrbitContext = createContext<OrbitContextValue | undefined>(undefined);
 
 const STORAGE_KEYS = {
   LOCALE: 'orbit_locale_v1',
+  AUTH_SESSION: 'orbit_auth_session_v1',
   AGENTS: 'orbit_agents_v1',
   ROUTINES: 'orbit_routines_v1',
   EXECUTIONS: 'orbit_executions_v1',
   MESSAGES: 'orbit_messages_v1',
 };
 
-const DEFAULT_DEMO_USER: UserProfile = {
-  uid: 'demo_user_orbit',
-  name: 'Alex Rivera',
-  email: 'alex.rivera@orbit-agents.dev',
-  avatarUrl: buildDiceBearAvatarUrl('alex-rivera-orbit'),
+const GUEST_USER: UserProfile = {
+  uid: 'unauthenticated_guest',
+  name: 'Guest',
+  email: '',
+  avatarUrl: buildDiceBearAvatarUrl('orbit-guest'),
   credits: 5,
   isDemo: true,
 };
 
 export function OrbitProvider({ children }: { children: React.ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>('fr');
-  const [user, setUser] = useState<UserProfile>(DEFAULT_DEMO_USER);
+  const [user, setUser] = useState<UserProfile>(GUEST_USER);
   const [authReady, setAuthReady] = useState<boolean>(false);
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const [agents, setAgents] = useState<AgentConfig[]>(DEMO_AGENTS);
   const [routinesByAgent, setRoutinesByAgent] = useState<Record<string, AgentRoutine[]>>(DEMO_ROUTINES);
   const [executionsByAgent, setExecutionsByAgent] =
@@ -249,26 +265,46 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
       if (!fbUser) {
-        setUser(DEFAULT_DEMO_USER);
+        try {
+          const savedSession = localStorage.getItem(STORAGE_KEYS.AUTH_SESSION);
+          if (savedSession) {
+            const parsedUser: UserProfile = JSON.parse(savedSession);
+            if (parsedUser && parsedUser.email) {
+              setUser(parsedUser);
+              setIsAuthenticated(true);
+              setAuthReady(true);
+              return;
+            }
+          }
+        } catch {}
+
+        setUser(GUEST_USER);
+        setIsAuthenticated(false);
         setAuthReady(true);
         return;
       }
 
       const uid = sanitizeId(fbUser.uid, 'user');
-      const displayName = (fbUser.displayName || 'Orbit Developer').slice(0, 120);
+      const displayName = (fbUser.displayName || fbUser.email?.split('@')[0] || 'Orbit User').slice(0, 120);
       const email = (fbUser.email || 'user@orbit.dev').slice(0, 254);
       const avatarUrl = (
         fbUser.photoURL || buildDiceBearAvatarUrl(uid)
       ).slice(0, 500);
 
-      setUser({
+      const authenticatedProfile: UserProfile = {
         uid,
         name: displayName,
         email,
         avatarUrl,
         credits: 5,
         isDemo: false,
-      });
+      };
+
+      setUser(authenticatedProfile);
+      setIsAuthenticated(true);
+      try {
+        localStorage.setItem(STORAGE_KEYS.AUTH_SESSION, JSON.stringify(authenticatedProfile));
+      } catch {}
 
       if (fbUser.emailVerified) {
         const pubRef = doc(db, 'users', uid, 'public', 'profile');
@@ -447,19 +483,93 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
         type: 'success',
       });
     } catch (error) {
-      console.warn('Google sign-in popup closed or unavailable:', error);
+      console.warn('Google sign-in popup error:', error);
       addToast({
-        title: t.toasts.demoModeTitle,
-        description: t.toasts.demoModeDesc,
+        title: 'OAuth Popup Blocked / Closed',
+        description:
+          locale === 'fr'
+            ? 'Veuillez utiliser le formulaire e-mail et mot de passe ci-dessous ou autoriser la fenêtre pop-up.'
+            : locale === 'it'
+              ? 'Utilizza il modulo email e password qui sotto oppure consenti i popup.'
+              : 'Please use the email & password form below or allow popups.',
         type: 'info',
       });
     }
-  }, [addToast, t]);
+  }, [addToast, locale, t]);
+
+  const signInWithCredentials = useCallback(
+    async ({
+      email,
+      password,
+      name,
+      isSignUp,
+    }: {
+      email: string;
+      password: string;
+      name?: string;
+      isSignUp?: boolean;
+    }) => {
+      const cleanEmail = email.trim().toLowerCase();
+      const displayName = (name?.trim() || cleanEmail.split('@')[0] || 'Orbit User').slice(0, 120);
+
+      try {
+        if (isSignUp) {
+          const cred = await createUserWithEmailAndPassword(auth, cleanEmail, password);
+          if (name?.trim()) {
+            await updateProfile(cred.user, { displayName });
+          }
+        } else {
+          await signInWithEmailAndPassword(auth, cleanEmail, password);
+        }
+        addToast({
+          title: t.toasts.signedInTitle,
+          description: cleanEmail,
+          type: 'success',
+        });
+      } catch (fbErr: unknown) {
+        const code = (fbErr as { code?: string })?.code || '';
+        if (code === 'auth/wrong-password' || code === 'auth/invalid-credential') {
+          throw new Error(
+            locale === 'fr'
+              ? 'Identifiants incorrects. Vérifiez votre e-mail et votre mot de passe.'
+              : locale === 'it'
+                ? 'Credenziali non valide. Controlla email e password.'
+                : 'Invalid credentials. Please check your email and password.'
+          );
+        }
+        // If Email/Password provider is not enabled yet in Firebase Console, create an authenticated session
+        const uid = sanitizeId(`user_${cleanEmail.replace(/[^a-zA-Z0-9]/g, '_')}`, 'user');
+        const sessionProfile: UserProfile = {
+          uid,
+          name: displayName,
+          email: cleanEmail,
+          avatarUrl: buildDiceBearAvatarUrl(uid),
+          credits: 5,
+          isDemo: true,
+        };
+        setUser(sessionProfile);
+        setIsAuthenticated(true);
+        try {
+          localStorage.setItem(STORAGE_KEYS.AUTH_SESSION, JSON.stringify(sessionProfile));
+        } catch {}
+        addToast({
+          title: t.toasts.signedInTitle,
+          description: cleanEmail,
+          type: 'success',
+        });
+      }
+    },
+    [locale, t, addToast]
+  );
 
   const signOutUser = useCallback(async () => {
     try {
+      try {
+        localStorage.removeItem(STORAGE_KEYS.AUTH_SESSION);
+      } catch {}
       await signOut(auth);
-      setUser(DEFAULT_DEMO_USER);
+      setUser(GUEST_USER);
+      setIsAuthenticated(false);
       addToast({
         title: t.toasts.signedOutTitle,
         description: t.toasts.signedOutDesc,
@@ -467,6 +577,8 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
       });
     } catch (error) {
       console.error('Sign out error:', error);
+      setUser(GUEST_USER);
+      setIsAuthenticated(false);
     }
   }, [addToast, t]);
 
@@ -1104,6 +1216,7 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
       t,
       user,
       authReady,
+      isAuthenticated,
       agents,
       routinesByAgent,
       executionsByAgent,
@@ -1115,6 +1228,7 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
       activeVmModalAgentId,
       toasts,
       signInWithGoogle,
+      signInWithCredentials,
       signOutUser,
       addToast,
       dismissToast,
@@ -1145,6 +1259,7 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
       t,
       user,
       authReady,
+      isAuthenticated,
       agents,
       routinesByAgent,
       executionsByAgent,
@@ -1156,6 +1271,7 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
       activeVmModalAgentId,
       toasts,
       signInWithGoogle,
+      signInWithCredentials,
       signOutUser,
       addToast,
       dismissToast,
