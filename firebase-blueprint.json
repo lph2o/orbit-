@@ -1,0 +1,450 @@
+{
+  "entities": {
+    "UserPublicProfile": {
+      "title": "UserPublicProfile",
+      "description": "Public profile information for an Orbit user without PII.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the user."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Display name of the user."
+        },
+        "avatarUrl": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Profile avatar URL."
+        },
+        "credits": {
+          "type": "number",
+          "description": "Available automation credits."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Account creation timestamp."
+        }
+      },
+      "required": ["uid", "name", "avatarUrl", "credits", "createdAt"]
+    },
+    "UserPrivateInfo": {
+      "title": "UserPrivateInfo",
+      "description": "Isolated PII record containing the user's email address.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the user."
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 254,
+          "description": "Verified user email address."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp."
+        }
+      },
+      "required": ["uid", "email", "createdAt"]
+    },
+    "AgentConfig": {
+      "title": "AgentConfig",
+      "description": "Configuration, connected tools, and Cloud VM sandbox state for an AI agent.",
+      "type": "object",
+      "properties": {
+        "agentId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Unique identifier for the agent."
+        },
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of the user who owns this agent."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Display name of the AI agent."
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 4000,
+          "description": "Custom instructions and behavior description."
+        },
+        "agentImage": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "DiceBear avatar URL for the agent."
+        },
+        "tools": {
+          "type": "array",
+          "maxLength": 10,
+          "description": "Connected tool slugs (max 10)."
+        },
+        "composioSessionId": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Composio tool session identifier."
+        },
+        "sandboxId": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "E2B Cloud VM desktop sandbox identifier."
+        },
+        "vmStatus": {
+          "type": "string",
+          "enum": ["inactive", "active", "paused"],
+          "maxLength": 32,
+          "description": "Current state of the agent's Cloud VM desktop."
+        },
+        "vmLastActive": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "ISO timestamp of last VM desktop activity."
+        },
+        "isActive": {
+          "type": "boolean",
+          "description": "Whether the agent is active or paused."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation server timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update server timestamp."
+        }
+      },
+      "required": [
+        "agentId",
+        "ownerId",
+        "name",
+        "description",
+        "agentImage",
+        "tools",
+        "composioSessionId",
+        "sandboxId",
+        "vmStatus",
+        "vmLastActive",
+        "isActive",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AgentRoutine": {
+      "title": "AgentRoutine",
+      "description": "Scheduled recurring task routine configured for an AI agent.",
+      "type": "object",
+      "properties": {
+        "routineId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Unique routine identifier."
+        },
+        "agentId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Parent agent identifier."
+        },
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of the agent owner."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "description": "Routine title."
+        },
+        "goal": {
+          "type": "string",
+          "maxLength": 1000,
+          "description": "High-level objective of the routine."
+        },
+        "instructions": {
+          "type": "string",
+          "maxLength": 4000,
+          "description": "Detailed execution prompt for the routine."
+        },
+        "frequency": {
+          "type": "string",
+          "enum": ["once", "daily", "weekly", "weekdays", "monthly"],
+          "maxLength": 32,
+          "description": "Execution cadence."
+        },
+        "time": {
+          "type": "string",
+          "maxLength": 32,
+          "description": "Scheduled time in HH:mm format."
+        },
+        "timezone": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "IANA timezone identifier."
+        },
+        "days": {
+          "type": "array",
+          "maxLength": 7,
+          "description": "Days of week when routine runs."
+        },
+        "tools": {
+          "type": "array",
+          "maxLength": 10,
+          "description": "Required tool slugs for this routine."
+        },
+        "targetChannel": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Destination channel or target identifier."
+        },
+        "isActive": {
+          "type": "boolean",
+          "description": "Whether the schedule is enabled."
+        },
+        "nextRunAt": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Computed ISO timestamp for next scheduled run."
+        },
+        "lastRunAt": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "ISO timestamp of most recent execution."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation server timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update server timestamp."
+        }
+      },
+      "required": [
+        "routineId",
+        "agentId",
+        "ownerId",
+        "name",
+        "goal",
+        "instructions",
+        "frequency",
+        "time",
+        "timezone",
+        "days",
+        "tools",
+        "targetChannel",
+        "isActive",
+        "nextRunAt",
+        "lastRunAt",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "RoutineExecution": {
+      "title": "RoutineExecution",
+      "description": "Background job execution record and step log for a routine.",
+      "type": "object",
+      "properties": {
+        "executionId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Unique execution ID."
+        },
+        "routineId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Associated routine ID."
+        },
+        "routineName": {
+          "type": "string",
+          "maxLength": 160,
+          "description": "Name of the executed routine."
+        },
+        "agentId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Parent agent ID."
+        },
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of the owner."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["queued", "running", "completed", "failed"],
+          "maxLength": 32,
+          "description": "Execution status."
+        },
+        "triggerType": {
+          "type": "string",
+          "enum": ["manual", "scheduled"],
+          "maxLength": 32,
+          "description": "How the execution was triggered."
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 4000,
+          "description": "Output summary of the execution."
+        },
+        "stepsLog": {
+          "type": "string",
+          "maxLength": 8000,
+          "description": "Serialized step-by-step execution trace."
+        },
+        "startedAt": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "ISO timestamp when execution started."
+        },
+        "completedAt": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "ISO timestamp when execution finished."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation server timestamp."
+        }
+      },
+      "required": [
+        "executionId",
+        "routineId",
+        "routineName",
+        "agentId",
+        "ownerId",
+        "status",
+        "triggerType",
+        "summary",
+        "stepsLog",
+        "startedAt",
+        "completedAt",
+        "createdAt"
+      ]
+    },
+    "AgentChatMessage": {
+      "title": "AgentChatMessage",
+      "description": "Individual chat message or generative UI card in an agent conversation.",
+      "type": "object",
+      "properties": {
+        "messageId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Unique message identifier."
+        },
+        "agentId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Parent agent ID."
+        },
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Owner user UID."
+        },
+        "role": {
+          "type": "string",
+          "enum": ["user", "agent"],
+          "maxLength": 32,
+          "description": "Sender role."
+        },
+        "content": {
+          "type": "string",
+          "maxLength": 8000,
+          "description": "Primary message text."
+        },
+        "responseType": {
+          "type": "string",
+          "enum": ["message", "clarification", "tool_connection", "routine", "vm_action"],
+          "maxLength": 32,
+          "description": "Generative UI card type."
+        },
+        "payloadJson": {
+          "type": "string",
+          "maxLength": 16000,
+          "description": "Serialized structured payload for routine, tool cards, or VM trace."
+        },
+        "timeLabel": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Formatted timestamp string."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation server timestamp."
+        }
+      },
+      "required": [
+        "messageId",
+        "agentId",
+        "ownerId",
+        "role",
+        "content",
+        "responseType",
+        "payloadJson",
+        "timeLabel",
+        "createdAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/public/{docId}": {
+      "schema": { "$ref": "#/entities/UserPublicProfile" },
+      "description": "Public non-PII user profile document."
+    },
+    "/users/{userId}/private/{docId}": {
+      "schema": { "$ref": "#/entities/UserPrivateInfo" },
+      "description": "Private PII document containing user email."
+    },
+    "/agents/{agentId}": {
+      "schema": { "$ref": "#/entities/AgentConfig" },
+      "description": "Top-level AI agent configuration documents."
+    },
+    "/agents/{agentId}/routines/{routineId}": {
+      "schema": { "$ref": "#/entities/AgentRoutine" },
+      "description": "Scheduled routines belonging to a specific agent."
+    },
+    "/agents/{agentId}/executions/{executionId}": {
+      "schema": { "$ref": "#/entities/RoutineExecution" },
+      "description": "Execution logs and traces for an agent's routines."
+    },
+    "/agents/{agentId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/AgentChatMessage" },
+      "description": "Chat history messages for a specific agent."
+    }
+  }
+}

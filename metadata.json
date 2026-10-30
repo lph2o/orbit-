@@ -1,0 +1,6 @@
+{
+  "name": "Orbit — AI Agent & Cloud VM Automation Platform",
+  "description": "Full-stack AI Agent SaaS platform with cloud VM desktop sandboxes, tool integrations (Gmail, Slack, GitHub, Notion), recurring Inngest routine scheduler, and interactive execution logs.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

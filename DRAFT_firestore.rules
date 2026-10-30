@@ -1,0 +1,299 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net (Default-Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Hardened Global Helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isStringArrayBounded(arr, maxLen) {
+      return arr is list && arr.size() <= maxLen && (arr.size() == 0 || (arr[0] is string && arr[0].size() <= 128));
+    }
+
+    function isAgentOwner(agentId) {
+      return exists(/databases/$(database)/documents/agents/$(agentId)) &&
+        get(/databases/$(database)/documents/agents/$(agentId)).data.ownerId == request.auth.uid;
+    }
+
+    // 3. Entity Validation Blueprints
+    function isValidUserPublicProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'name', 'avatarUrl', 'credits', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'name', 'avatarUrl', 'credits', 'createdAt']) &&
+        data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.uid == userId &&
+        data.uid == request.auth.uid &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        data.avatarUrl is string && data.avatarUrl.size() <= 500 &&
+        data.credits is int && data.credits >= 0 && data.credits <= 100000 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidUserPrivateInfo(data, userId) {
+      return data.keys().hasAll(['uid', 'email', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'createdAt']) &&
+        data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.uid == userId &&
+        data.uid == request.auth.uid &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 254 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidAgentConfig(data, agentId) {
+      return data.keys().hasAll([
+          'agentId', 'ownerId', 'name', 'description', 'agentImage',
+          'tools', 'composioSessionId', 'sandboxId', 'vmStatus',
+          'vmLastActive', 'isActive', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'agentId', 'ownerId', 'name', 'description', 'agentImage',
+          'tools', 'composioSessionId', 'sandboxId', 'vmStatus',
+          'vmLastActive', 'isActive', 'createdAt', 'updatedAt'
+        ]) &&
+        data.agentId is string && data.agentId.size() >= 1 && data.agentId.size() <= 128 && data.agentId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.agentId == agentId &&
+        data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId == request.auth.uid &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        data.description is string && data.description.size() <= 4000 &&
+        data.agentImage is string && data.agentImage.size() <= 500 &&
+        isStringArrayBounded(data.tools, 10) &&
+        data.composioSessionId is string && data.composioSessionId.size() <= 128 &&
+        data.sandboxId is string && data.sandboxId.size() <= 128 &&
+        data.vmStatus is string && data.vmStatus.size() <= 32 && data.vmStatus in ['inactive', 'active', 'paused'] &&
+        data.vmLastActive is string && data.vmLastActive.size() <= 64 &&
+        data.isActive is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAgentRoutine(data, agentId, routineId) {
+      return data.keys().hasAll([
+          'routineId', 'agentId', 'ownerId', 'name', 'goal', 'instructions',
+          'frequency', 'time', 'timezone', 'days', 'tools', 'targetChannel',
+          'isActive', 'nextRunAt', 'lastRunAt', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'routineId', 'agentId', 'ownerId', 'name', 'goal', 'instructions',
+          'frequency', 'time', 'timezone', 'days', 'tools', 'targetChannel',
+          'isActive', 'nextRunAt', 'lastRunAt', 'createdAt', 'updatedAt'
+        ]) &&
+        data.routineId is string && data.routineId.size() >= 1 && data.routineId.size() <= 128 && data.routineId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.routineId == routineId &&
+        data.agentId is string && data.agentId.size() >= 1 && data.agentId.size() <= 128 && data.agentId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.agentId == agentId &&
+        data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId == request.auth.uid &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 160 &&
+        data.goal is string && data.goal.size() <= 1000 &&
+        data.instructions is string && data.instructions.size() <= 4000 &&
+        data.frequency is string && data.frequency.size() <= 32 && data.frequency in ['once', 'daily', 'weekly', 'weekdays', 'monthly'] &&
+        data.time is string && data.time.size() <= 32 &&
+        data.timezone is string && data.timezone.size() <= 64 &&
+        isStringArrayBounded(data.days, 7) &&
+        isStringArrayBounded(data.tools, 10) &&
+        data.targetChannel is string && data.targetChannel.size() <= 120 &&
+        data.isActive is bool &&
+        data.nextRunAt is string && data.nextRunAt.size() <= 64 &&
+        data.lastRunAt is string && data.lastRunAt.size() <= 64 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidRoutineExecution(data, agentId, executionId) {
+      return data.keys().hasAll([
+          'executionId', 'routineId', 'routineName', 'agentId', 'ownerId',
+          'status', 'triggerType', 'summary', 'stepsLog', 'startedAt',
+          'completedAt', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'executionId', 'routineId', 'routineName', 'agentId', 'ownerId',
+          'status', 'triggerType', 'summary', 'stepsLog', 'startedAt',
+          'completedAt', 'createdAt'
+        ]) &&
+        data.executionId is string && data.executionId.size() >= 1 && data.executionId.size() <= 128 && data.executionId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.executionId == executionId &&
+        data.routineId is string && data.routineId.size() >= 1 && data.routineId.size() <= 128 && data.routineId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.routineName is string && data.routineName.size() <= 160 &&
+        data.agentId is string && data.agentId.size() >= 1 && data.agentId.size() <= 128 && data.agentId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.agentId == agentId &&
+        data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId == request.auth.uid &&
+        data.status is string && data.status.size() <= 32 && data.status in ['queued', 'running', 'completed', 'failed'] &&
+        data.triggerType is string && data.triggerType.size() <= 32 && data.triggerType in ['manual', 'scheduled'] &&
+        data.summary is string && data.summary.size() <= 4000 &&
+        data.stepsLog is string && data.stepsLog.size() <= 8000 &&
+        data.startedAt is string && data.startedAt.size() <= 64 &&
+        data.completedAt is string && data.completedAt.size() <= 64 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidAgentChatMessage(data, agentId, messageId) {
+      return data.keys().hasAll([
+          'messageId', 'agentId', 'ownerId', 'role', 'content',
+          'responseType', 'payloadJson', 'timeLabel', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'messageId', 'agentId', 'ownerId', 'role', 'content',
+          'responseType', 'payloadJson', 'timeLabel', 'createdAt'
+        ]) &&
+        data.messageId is string && data.messageId.size() >= 1 && data.messageId.size() <= 128 && data.messageId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.messageId == messageId &&
+        data.agentId is string && data.agentId.size() >= 1 && data.agentId.size() <= 128 && data.agentId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.agentId == agentId &&
+        data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.ownerId == request.auth.uid &&
+        data.role is string && data.role.size() <= 32 && data.role in ['user', 'agent'] &&
+        data.content is string && data.content.size() <= 8000 &&
+        data.responseType is string && data.responseType.size() <= 32 && data.responseType in ['message', 'clarification', 'tool_connection', 'routine', 'vm_action'] &&
+        data.payloadJson is string && data.payloadJson.size() <= 16000 &&
+        data.timeLabel is string && data.timeLabel.size() <= 64 &&
+        data.createdAt is timestamp;
+    }
+
+    // 4. Collection Match Blocks
+    match /users/{userId}/public/{docId} {
+      allow get: if isOwner(userId) && isValidId(userId) && isValidId(docId);
+      allow list: if isOwner(userId) && existing().uid == request.auth.uid;
+      allow create: if isVerifiedUser() && isOwner(userId) && isValidId(userId) && docId == 'profile' &&
+        isValidUserPublicProfile(incoming(), userId) &&
+        incoming().createdAt == request.time;
+      allow update: if isVerifiedUser() && isOwner(userId) && isValidId(userId) && docId == 'profile' &&
+        isValidUserPublicProfile(incoming(), userId) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['name', 'avatarUrl']);
+      allow delete: if false;
+    }
+
+    match /users/{userId}/private/{docId} {
+      allow get: if isOwner(userId) && isValidId(userId) && isValidId(docId);
+      allow list: if false;
+      allow create: if isVerifiedUser() && isOwner(userId) && isValidId(userId) && docId == 'info' &&
+        isValidUserPrivateInfo(incoming(), userId) &&
+        incoming().createdAt == request.time;
+      allow update: if isVerifiedUser() && isOwner(userId) && isValidId(userId) && docId == 'info' &&
+        isValidUserPrivateInfo(incoming(), userId) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['email']);
+      allow delete: if false;
+    }
+
+    match /agents/{agentId} {
+      allow get: if isSignedIn() && isValidId(agentId) && existing().ownerId == request.auth.uid;
+      allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
+      allow create: if isVerifiedUser() && isValidId(agentId) &&
+        isValidAgentConfig(incoming(), agentId) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() && isValidId(agentId) &&
+        isValidAgentConfig(incoming(), agentId) &&
+        existing().ownerId == request.auth.uid &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().agentId == existing().agentId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          // Action 1: Update profile/settings
+          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'description', 'agentImage', 'isActive', 'updatedAt']) ||
+          // Action 2: Update connected tools & session
+          incoming().diff(existing()).affectedKeys().hasOnly(['tools', 'composioSessionId', 'updatedAt']) ||
+          // Action 3: Update Cloud VM Sandbox state
+          incoming().diff(existing()).affectedKeys().hasOnly(['sandboxId', 'vmStatus', 'vmLastActive', 'updatedAt'])
+        );
+      allow delete: if isVerifiedUser() && isValidId(agentId) && existing().ownerId == request.auth.uid;
+
+      match /routines/{routineId} {
+        allow get: if isSignedIn() && isValidId(agentId) && isValidId(routineId) &&
+          existing().ownerId == request.auth.uid && isAgentOwner(agentId);
+        allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
+        allow create: if isVerifiedUser() && isValidId(agentId) && isValidId(routineId) &&
+          isValidAgentRoutine(incoming(), agentId, routineId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isAgentOwner(agentId);
+        allow update: if isVerifiedUser() && isValidId(agentId) && isValidId(routineId) &&
+          isValidAgentRoutine(incoming(), agentId, routineId) &&
+          existing().ownerId == request.auth.uid &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().agentId == existing().agentId &&
+          incoming().routineId == existing().routineId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          isAgentOwner(agentId) &&
+          (
+            // Action 1: Toggle active status or next run
+            incoming().diff(existing()).affectedKeys().hasOnly(['isActive', 'nextRunAt', 'lastRunAt', 'updatedAt']) ||
+            // Action 2: Edit routine schedule and instructions
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'goal', 'instructions', 'frequency', 'time', 'timezone',
+              'days', 'tools', 'targetChannel', 'isActive', 'nextRunAt', 'lastRunAt', 'updatedAt'
+            ])
+          );
+        allow delete: if isVerifiedUser() && isValidId(agentId) && isValidId(routineId) &&
+          existing().ownerId == request.auth.uid && isAgentOwner(agentId);
+      }
+
+      match /executions/{executionId} {
+        allow get: if isSignedIn() && isValidId(agentId) && isValidId(executionId) &&
+          existing().ownerId == request.auth.uid && isAgentOwner(agentId);
+        allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
+        allow create: if isVerifiedUser() && isValidId(agentId) && isValidId(executionId) &&
+          isValidRoutineExecution(incoming(), agentId, executionId) &&
+          incoming().createdAt == request.time &&
+          isAgentOwner(agentId);
+        allow update: if isVerifiedUser() && isValidId(agentId) && isValidId(executionId) &&
+          isValidRoutineExecution(incoming(), agentId, executionId) &&
+          existing().ownerId == request.auth.uid &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().agentId == existing().agentId &&
+          incoming().executionId == existing().executionId &&
+          incoming().routineId == existing().routineId &&
+          incoming().createdAt == existing().createdAt &&
+          !(existing().status in ['completed', 'failed']) &&
+          isAgentOwner(agentId) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'summary', 'stepsLog', 'completedAt']);
+        allow delete: if isVerifiedUser() && isValidId(agentId) && isValidId(executionId) &&
+          existing().ownerId == request.auth.uid && isAgentOwner(agentId);
+      }
+
+      match /messages/{messageId} {
+        allow get: if isSignedIn() && isValidId(agentId) && isValidId(messageId) &&
+          existing().ownerId == request.auth.uid && isAgentOwner(agentId);
+        allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
+        allow create: if isVerifiedUser() && isValidId(agentId) && isValidId(messageId) &&
+          isValidAgentChatMessage(incoming(), agentId, messageId) &&
+          incoming().createdAt == request.time &&
+          isAgentOwner(agentId);
+        allow update: if false;
+        allow delete: if isVerifiedUser() && isValidId(agentId) && isValidId(messageId) &&
+          existing().ownerId == request.auth.uid && isAgentOwner(agentId);
+      }
+    }
+  }
+}
