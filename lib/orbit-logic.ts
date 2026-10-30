@@ -222,6 +222,36 @@ export function computeNextRunAt(
   return next.toISOString();
 }
 
+export function isRoutineDue(
+  routine: Pick<AgentRoutine, 'isActive' | 'nextRunAt' | 'lastRunAt'>,
+  nowMs: number = Date.now()
+): boolean {
+  if (!routine.isActive || !routine.nextRunAt) return false;
+  const nextMs = Date.parse(routine.nextRunAt);
+  if (Number.isNaN(nextMs)) return false;
+  if (nextMs > nowMs) return false;
+  if (routine.lastRunAt) {
+    const lastMs = Date.parse(routine.lastRunAt);
+    if (!Number.isNaN(lastMs) && nowMs - lastMs < 55_000) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export const GOOGLE_WORKSPACE_TOOL_SLUGS = [
+  'gmail',
+  'google_calendar',
+  'google_docs',
+  'google_sheets',
+] as const;
+
+export function isGoogleWorkspaceTool(slug: string): boolean {
+  return GOOGLE_WORKSPACE_TOOL_SLUGS.includes(
+    slug.toLowerCase() as (typeof GOOGLE_WORKSPACE_TOOL_SLUGS)[number]
+  );
+}
+
 export function formatTimeDisplay(time24: string): string {
   const match = (time24 || '08:00').trim().match(/^(\d{1,2}):(\d{2})/);
   if (!match) return time24 || '08:00 AM';

@@ -24,9 +24,11 @@ import {
 import {
   auth,
   db,
-  googleAuthProvider,
+  getAccessToken,
+  googleSignInWithWorkspaceScopes,
   handleFirestoreError,
   OperationType,
+  setCachedAccessToken,
   testFirestoreConnection,
 } from '@/lib/firebase';
 import {
@@ -44,6 +46,7 @@ import {
   buildVmActionTrace,
   computeNextRunAt,
   filterThreeDayHistory,
+  isRoutineDue,
   sanitizeId,
   shouldAutoPauseVm,
 } from '@/lib/orbit-logic';
@@ -124,6 +127,14 @@ interface OrbitContextValue {
     triggerType?: 'manual' | 'scheduled'
   ) => Promise<RoutineExecution | null>;
   runHourlyCronCheck: (agentId: string) => Promise<number>;
+  workspaceToken: string | null;
+  connectGoogleWorkspaceOAuth: () => Promise<string | null>;
+  slackWebhookUrl: string;
+  setSlackWebhookUrl: (url: string) => void;
+  autoSchedulerEnabled: boolean;
+  setAutoSchedulerEnabled: (enabled: boolean) => void;
+  lastSchedulerTick: string;
+  scheduleRoutineInSeconds: (agentId: string, routineId: string, secondsFromNow: number) => void;
 }
 
 const OrbitContext = createContext<OrbitContextValue | undefined>(undefined);
@@ -135,6 +146,7 @@ const STORAGE_KEYS = {
   ROUTINES: 'orbit_routines_v1',
   EXECUTIONS: 'orbit_executions_v1',
   MESSAGES: 'orbit_messages_v1',
+  SLACK_WEBHOOK: 'orbit_slack_webhook_v1',
 };
 
 const GUEST_USER: UserProfile = {
@@ -167,6 +179,10 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
   const [marketplaceTargetAgentId, setMarketplaceTargetAgentId] = useState<string | null>(null);
   const [activeVmModalAgentId, setActiveVmModalAgentId] = useState<string | null>(null);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const [workspaceToken, setWorkspaceToken] = useState<string | null>(null);
+  const [slackWebhookUrl, setSlackWebhookUrlState] = useState<string>('');
+  const [autoSchedulerEnabled, setAutoSchedulerEnabled] = useState<boolean>(true);
+  const [lastSchedulerTick, setLastSchedulerTick] = useState<string>('');
 
   const t = useMemo(() => getDictionary(locale), [locale]);
 
@@ -174,6 +190,14 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
     setLocaleState(nextLocale);
     try {
       localStorage.setItem(STORAGE_KEYS.LOCALE, nextLocale);
+    } catch {}
+  }, []);
+
+  const setSlackWebhookUrl = useCallback((url: string) => {
+    const clean = url.trim();
+    setSlackWebhookUrlState(clean);
+    try {
+      localStorage.setItem(STORAGE_KEYS.SLACK_WEBHOOK, clean);
     } catch {}
   }, []);
 
@@ -196,6 +220,10 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
       const savedLocale = localStorage.getItem(STORAGE_KEYS.LOCALE);
       if (savedLocale === 'fr' || savedLocale === 'it' || savedLocale === 'en') {
         setLocaleState(savedLocale);
+      }
+      const savedSlackWebhook = localStorage.getItem(STORAGE_KEYS.SLACK_WEBHOOK);
+      if (savedSlackWebhook) {
+        setSlackWebhookUrlState(savedSlackWebhook);
       }
 
       const savedAgents = localStorage.getItem(STORAGE_KEYS.AGENTS);
@@ -265,6 +293,8 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
       if (!fbUser) {
+        setCachedAccessToken(null);
+        setWorkspaceToken(null);
         try {
           const savedSession = localStorage.getItem(STORAGE_KEYS.AUTH_SESSION);
           if (savedSession) {
@@ -283,6 +313,8 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
         setAuthReady(true);
         return;
       }
+
+      setWorkspaceToken(getAccessToken());
 
       const uid = sanitizeId(fbUser.uid, 'user');
       const displayName = (fbUser.displayName || fbUser.email?.split('@')[0] || 'Orbit User').slice(0, 120);
@@ -476,7 +508,8 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
 
   const signInWithGoogle = useCallback(async () => {
     try {
-      await signInWithPopup(auth, googleAuthProvider);
+      const { accessToken } = await googleSignInWithWorkspaceScopes();
+      setWorkspaceToken(accessToken);
       addToast({
         title: t.toasts.signedInTitle,
         description: t.toasts.signedInDesc,
@@ -496,6 +529,37 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
       });
     }
   }, [addToast, locale, t]);
+
+  const connectGoogleWorkspaceOAuth = useCallback(async (): Promise<string | null> => {
+    try {
+      const { accessToken } = await googleSignInWithWorkspaceScopes();
+      setWorkspaceToken(accessToken);
+      addToast({
+        title: 'Google Workspace OAuth',
+        description:
+          locale === 'fr'
+            ? 'Gmail, Google Calendar, Google Docs et Google Sheets sont connectés.'
+            : locale === 'it'
+              ? 'Gmail, Google Calendar, Google Docs e Google Sheets sono connessi.'
+              : 'Gmail, Google Calendar, Google Docs, and Google Sheets are connected.',
+        type: 'success',
+      });
+      return accessToken;
+    } catch (error) {
+      console.warn('Google Workspace OAuth error:', error);
+      addToast({
+        title: 'Google Workspace OAuth',
+        description:
+          locale === 'fr'
+            ? 'Veuillez autoriser la fenêtre pop-up Google pour accorder l’accès Workspace.'
+            : locale === 'it'
+              ? 'Consenti il popup di Google per autorizzare Google Workspace.'
+              : 'Please allow the Google popup window to grant Workspace permissions.',
+        type: 'info',
+      });
+      return null;
+    }
+  }, [addToast, locale]);
 
   const signInWithCredentials = useCallback(
     async ({
@@ -564,6 +628,8 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
 
   const signOutUser = useCallback(async () => {
     try {
+      setCachedAccessToken(null);
+      setWorkspaceToken(null);
       try {
         localStorage.removeItem(STORAGE_KEYS.AUTH_SESSION);
       } catch {}
@@ -577,6 +643,8 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
       });
     } catch (error) {
       console.error('Sign out error:', error);
+      setCachedAccessToken(null);
+      setWorkspaceToken(null);
       setUser(GUEST_USER);
       setIsAuthenticated(false);
     }
@@ -1111,10 +1179,24 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
       if (!agent || !routine) return null;
 
       try {
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+        };
+        const activeToken = getAccessToken() || workspaceToken;
+        if (activeToken) {
+          headers.Authorization = `Bearer ${activeToken}`;
+        }
+
         const res = await fetch('/api/inngest/run', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ routine, agent, triggerType, locale }),
+          headers,
+          body: JSON.stringify({
+            routine,
+            agent,
+            triggerType,
+            locale,
+            slackWebhookUrl,
+          }),
         });
         const data = await res.json();
         const execution: RoutineExecution = data.execution;
@@ -1174,7 +1256,7 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
 
         addToast({
           title: t.toasts.routineCompletedTitle,
-          description: `"${routine.name}"`,
+          description: `"${routine.name}" (${triggerType === 'scheduled' ? 'Auto-Scheduler' : 'Manual'})`,
           type: 'success',
         });
 
@@ -1188,8 +1270,83 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
         return null;
       }
     },
-    [agents, routinesByAgent, user, locale, t, appendChatMessage, addToast]
+    [
+      agents,
+      routinesByAgent,
+      user,
+      locale,
+      t,
+      workspaceToken,
+      slackWebhookUrl,
+      appendChatMessage,
+      addToast,
+    ]
   );
+
+  const scheduleRoutineInSeconds = useCallback(
+    (agentId: string, routineId: string, secondsFromNow: number) => {
+      const targetIso = new Date(Date.now() + secondsFromNow * 1000).toISOString();
+      setRoutinesByAgent((prev) => ({
+        ...prev,
+        [agentId]: (prev[agentId] || []).map((r) =>
+          r.routineId === routineId
+            ? {
+                ...r,
+                isActive: true,
+                nextRunAt: targetIso,
+                lastRunAt: '',
+                updatedAt: new Date().toISOString(),
+              }
+            : r
+        ),
+      }));
+      addToast({
+        title:
+          locale === 'fr'
+            ? `Exécution auto programmée dans ${secondsFromNow}s`
+            : locale === 'it'
+              ? `Esecuzione auto programmata tra ${secondsFromNow}s`
+              : `Auto-run scheduled in ${secondsFromNow}s`,
+        description:
+          locale === 'fr'
+            ? 'Le planificateur automatique va déclencher cette routine à échéance.'
+            : locale === 'it'
+              ? 'Lo scheduler automatico avvierà questa routine alla scadenza.'
+              : 'The Auto-Scheduler will trigger this routine automatically when due.',
+        type: 'info',
+      });
+    },
+    [addToast, locale]
+  );
+
+  // Real-time Auto-Scheduler: checks every 5 seconds for any active routine whose nextRunAt <= now
+  useEffect(() => {
+    if (!autoSchedulerEnabled || !isAuthenticated) return;
+
+    const interval = setInterval(() => {
+      const nowMs = Date.now();
+      setLastSchedulerTick(
+        new Date(nowMs).toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+        })
+      );
+
+      for (const ag of agents) {
+        if (!ag.isActive) continue;
+        const list = routinesByAgent[ag.agentId] || [];
+        for (const rt of list) {
+          if (isRoutineDue(rt, nowMs)) {
+            runRoutineNow(ag.agentId, rt.routineId, 'scheduled');
+            return;
+          }
+        }
+      }
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [autoSchedulerEnabled, isAuthenticated, agents, routinesByAgent, runRoutineNow]);
 
   const runHourlyCronCheck = useCallback(
     async (agentId: string): Promise<number> => {
@@ -1252,6 +1409,14 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
       startEditingRoutine,
       runRoutineNow,
       runHourlyCronCheck,
+      workspaceToken,
+      connectGoogleWorkspaceOAuth,
+      slackWebhookUrl,
+      setSlackWebhookUrl,
+      autoSchedulerEnabled,
+      setAutoSchedulerEnabled,
+      lastSchedulerTick,
+      scheduleRoutineInSeconds,
     }),
     [
       locale,
@@ -1295,6 +1460,13 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
       startEditingRoutine,
       runRoutineNow,
       runHourlyCronCheck,
+      workspaceToken,
+      connectGoogleWorkspaceOAuth,
+      slackWebhookUrl,
+      setSlackWebhookUrl,
+      autoSchedulerEnabled,
+      lastSchedulerTick,
+      scheduleRoutineInSeconds,
     ]
   );
 

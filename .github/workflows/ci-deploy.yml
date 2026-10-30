@@ -1,10 +1,12 @@
-name: Orbit CI & Production Build
+name: Orbit CI, Auto-Scheduler Cron & Production Build
 
 on:
   push:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+  schedule:
+    - cron: '*/15 * * * *'
   workflow_dispatch:
 
 env:
@@ -13,6 +15,7 @@ env:
 jobs:
   test-and-build:
     name: Test, Typecheck & Build Next.js 15
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
 
     steps:
@@ -36,3 +39,19 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           APP_URL: ${{ secrets.APP_URL || 'http://localhost:3000' }}
         run: npm run build
+
+  cron-routines-tick:
+    name: Trigger Scheduled Agent Routines (/api/inngest/cron)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Invoke Production Inngest Cron Endpoint
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+        run: |
+          if [ -n "$APP_URL" ]; then
+            curl -sS -X POST "$APP_URL/api/inngest/cron" -H "Content-Type: application/json" -d '{}'
+          else
+            echo "APP_URL secret not configured yet; skipping remote cron ping."
+          fi

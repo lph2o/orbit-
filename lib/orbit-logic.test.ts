@@ -6,6 +6,8 @@ import {
   computeNextRunAt,
   filterThreeDayHistory,
   getRemainingVmSeconds,
+  isGoogleWorkspaceTool,
+  isRoutineDue,
   shouldAutoPauseVm,
   simulateRoutineExecutionSteps,
 } from './orbit-logic';
@@ -140,3 +142,34 @@ test('simulateRoutineExecutionSteps produces 5 completed Inngest step logs in FR
   assert.equal(steps.every((s) => s.status === 'completed'), true);
   assert.match(summary, /#new-channel/);
 });
+
+test('isRoutineDue and isGoogleWorkspaceTool evaluate scheduled due dates and Workspace slugs', () => {
+  const nowMs = Date.parse('2026-10-30T15:00:00.000Z');
+  assert.equal(
+    isRoutineDue(
+      { isActive: true, nextRunAt: '2026-10-30T14:59:50.000Z', lastRunAt: '' },
+      nowMs
+    ),
+    true
+  );
+  assert.equal(
+    isRoutineDue(
+      { isActive: false, nextRunAt: '2026-10-30T14:59:50.000Z', lastRunAt: '' },
+      nowMs
+    ),
+    false
+  );
+  assert.equal(
+    isRoutineDue(
+      { isActive: true, nextRunAt: '2026-10-30T15:05:00.000Z', lastRunAt: '' },
+      nowMs
+    ),
+    false
+  );
+  assert.equal(isGoogleWorkspaceTool('gmail'), true);
+  assert.equal(isGoogleWorkspaceTool('google_calendar'), true);
+  assert.equal(isGoogleWorkspaceTool('google_docs'), true);
+  assert.equal(isGoogleWorkspaceTool('google_sheets'), true);
+  assert.equal(isGoogleWorkspaceTool('slack'), false);
+});
+

@@ -1,9 +1,9 @@
 'use client';
 
 import React, { useState } from 'react';
-import { X, Search, Check, Plus, Unplug } from 'lucide-react';
+import { X, Search, Check, Plus, Unplug, CheckCircle2, Webhook } from 'lucide-react';
 import { useOrbit } from '@/context/OrbitContext';
-import { TOOL_CATALOG } from '@/lib/orbit-logic';
+import { isGoogleWorkspaceTool, TOOL_CATALOG } from '@/lib/orbit-logic';
 import { ToolIcon } from './ToolIcon';
 
 const CATEGORIES = ['All', 'Communication', 'Productivity', 'Development', 'Social & News'] as const;
@@ -16,13 +16,20 @@ export function ToolMarketplaceModal() {
     agents,
     connectToolToAgent,
     disconnectToolFromAgent,
+    workspaceToken,
+    connectGoogleWorkspaceOAuth,
+    slackWebhookUrl,
+    setSlackWebhookUrl,
+    locale,
     t,
+    addToast,
   } = useOrbit();
 
   const [selectedAgentId, setSelectedAgentId] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [activeCategory, setActiveCategory] = useState<string>('All');
   const [connectingSlug, setConnectingSlug] = useState<string | null>(null);
+  const [webhookDraft, setWebhookDraft] = useState<string>(slackWebhookUrl);
 
   if (!isMarketplaceOpen) return null;
 
@@ -48,7 +55,7 @@ export function ToolMarketplaceModal() {
   const handleConnect = async (slug: string) => {
     if (!targetAgent) return;
     setConnectingSlug(slug);
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 150));
     await connectToolToAgent(targetAgent.agentId, slug);
     setConnectingSlug(null);
   };
@@ -60,6 +67,21 @@ export function ToolMarketplaceModal() {
     setConnectingSlug(null);
   };
 
+  const handleSaveWebhook = (e: React.FormEvent) => {
+    e.preventDefault();
+    setSlackWebhookUrl(webhookDraft);
+    addToast({
+      title: 'Slack Incoming Webhook',
+      description:
+        locale === 'fr'
+          ? 'URL Webhook Slack enregistrée pour les livraisons en direct.'
+          : locale === 'it'
+            ? 'URL Webhook Slack salvato per le consegne in tempo reale.'
+            : 'Slack Webhook URL saved for live routine deliveries.',
+      type: 'success',
+    });
+  };
+
   return (
     <div
       role="dialog"
@@ -67,7 +89,7 @@ export function ToolMarketplaceModal() {
       aria-label={t.marketplace.title}
       className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4"
     >
-      <div className="w-full max-w-4xl rounded-xl border border-slate-200 bg-white shadow-xl flex flex-col max-h-[86vh] overflow-hidden">
+      <div className="w-full max-w-4xl rounded-xl border border-slate-200 bg-white shadow-xl flex flex-col max-h-[88vh] overflow-hidden">
         {/* Modal Header */}
         <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between gap-4">
           <div>
@@ -108,6 +130,91 @@ export function ToolMarketplaceModal() {
               <X className="h-4 w-4" />
             </button>
           </div>
+        </div>
+
+        {/* Live OAuth & Slack Webhook Configuration Banner */}
+        <div className="px-6 py-3 border-b border-slate-200 bg-slate-50 flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+          {/* Official Google Workspace OAuth Connect */}
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-3.5 py-2 flex-1">
+            <div className="min-w-0">
+              <p className="text-xs font-bold text-slate-900">
+                Google Workspace (Gmail, Calendar, Docs, Sheets)
+              </p>
+              <p className="text-[11px] text-slate-500 truncate">
+                {workspaceToken
+                  ? locale === 'fr'
+                    ? 'Jeton OAuth actif en mémoire — Lecture et mise à jour autorisées'
+                    : locale === 'it'
+                      ? 'Token OAuth attivo in memoria — Lettura e modifica autorizzate'
+                      : 'In-memory OAuth token active — Live Workspace API enabled'
+                  : locale === 'fr'
+                    ? 'Autorisez votre compte Google pour lire vos vrais e-mails et agendas'
+                    : locale === 'it'
+                      ? 'Autorizza il tuo account Google per leggere email ed eventi reali'
+                      : 'Sign in with Google to authorize live Gmail, Calendar, Docs & Sheets'}
+              </p>
+            </div>
+
+            {workspaceToken ? (
+              <span className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-50 border border-emerald-200 px-2.5 py-1.5 text-xs font-semibold text-emerald-800 whitespace-nowrap shrink-0">
+                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                <span>OAuth Actif</span>
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={connectGoogleWorkspaceOAuth}
+                className="gsi-material-button inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-50 transition-colors whitespace-nowrap shrink-0 shadow-2xs"
+              >
+                <svg
+                  version="1.1"
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 48 48"
+                  className="h-3.5 w-3.5 shrink-0"
+                >
+                  <path
+                    fill="#EA4335"
+                    d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"
+                  />
+                  <path
+                    fill="#4285F4"
+                    d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"
+                  />
+                  <path
+                    fill="#FBBC05"
+                    d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"
+                  />
+                  <path
+                    fill="#34A853"
+                    d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"
+                  />
+                </svg>
+                <span>Sign in with Google</span>
+              </button>
+            )}
+          </div>
+
+          {/* Real Slack Incoming Webhook Input */}
+          <form
+            onSubmit={handleSaveWebhook}
+            className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 flex-1"
+          >
+            <Webhook className="h-4 w-4 text-slate-500 shrink-0" />
+            <input
+              type="url"
+              value={webhookDraft}
+              onChange={(e) => setWebhookDraft(e.target.value)}
+              placeholder="https://hooks.slack.com/services/..."
+              aria-label="Slack Webhook URL"
+              className="flex-1 min-w-0 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none font-mono"
+            />
+            <button
+              type="submit"
+              className="rounded-md bg-slate-900 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-slate-800 whitespace-nowrap shrink-0"
+            >
+              {locale === 'fr' ? 'Enregistrer Slack' : locale === 'it' ? 'Salva Slack' : 'Save Slack'}
+            </button>
+          </form>
         </div>
 
         {/* Search & Category Bar */}
@@ -177,6 +284,7 @@ export function ToolMarketplaceModal() {
                           <p className="text-xs font-semibold text-slate-900">{tool.name}</p>
                           <span className="text-[11px] text-emerald-700 font-medium">
                             · {t.marketplace.connectedStatus}
+                            {isGoogleWorkspaceTool(tool.slug) && workspaceToken ? ' (OAuth Live)' : ''}
                           </span>
                         </div>
                         <p className="text-xs text-slate-600 mt-0.5 line-clamp-2">

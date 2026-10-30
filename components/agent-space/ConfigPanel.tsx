@@ -21,6 +21,11 @@ import {
   Loader2,
   AlertTriangle,
   RefreshCw,
+  FileText,
+  Table,
+  Send,
+  ExternalLink,
+  Zap,
 } from 'lucide-react';
 import { AgentConfig, AgentRoutine } from '@/lib/types';
 import {
@@ -28,9 +33,11 @@ import {
   formatTimeDisplay,
   getRemainingVmSeconds,
   getToolBySlug,
+  isGoogleWorkspaceTool,
 } from '@/lib/orbit-logic';
 import { useOrbit } from '@/context/OrbitContext';
 import { ToolIcon } from '@/components/workspace/ToolIcon';
+import { LiveCalendarEvent, LiveGmailMessage } from '@/lib/workspace-server';
 
 export type ConfigTab = 'settings' | 'tools' | 'schedule' | 'history';
 
@@ -58,7 +65,17 @@ export function ConfigPanel({
     startEditingRoutine,
     runRoutineNow,
     runHourlyCronCheck,
+    workspaceToken,
+    connectGoogleWorkspaceOAuth,
+    slackWebhookUrl,
+    setSlackWebhookUrl,
+    autoSchedulerEnabled,
+    setAutoSchedulerEnabled,
+    lastSchedulerTick,
+    scheduleRoutineInSeconds,
+    locale,
     t,
+    addToast,
   } = useOrbit();
 
   const [nameInput, setNameInput] = useState(agent.name);
@@ -76,11 +93,29 @@ export function ConfigPanel({
   const [mounted, setMounted] = useState(false);
   const [nowMs, setNowMs] = useState<number>(0);
 
+  // Live Google Workspace & Slack state
+  const [syncingWorkspace, setSyncingWorkspace] = useState(false);
+  const [liveGmailList, setLiveGmailList] = useState<LiveGmailMessage[]>([]);
+  const [liveCalendarList, setLiveCalendarList] = useState<LiveCalendarEvent[]>([]);
+  const [createdWorkspaceUrl, setCreatedWorkspaceUrl] = useState<{
+    label: string;
+    url: string;
+  } | null>(null);
+  const [pendingWorkspaceMutation, setPendingWorkspaceMutation] = useState<
+    'create_doc' | 'create_sheet' | 'post_slack' | null
+  >(null);
+  const [executingMutation, setExecutingMutation] = useState(false);
+  const [slackWebhookInput, setSlackWebhookInput] = useState(slackWebhookUrl);
+
   useEffect(() => {
     setNameInput(agent.name);
     setDescInput(agent.description);
     setAvatarUrl(agent.agentImage);
   }, [agent.agentId, agent.name, agent.description, agent.agentImage]);
+
+  useEffect(() => {
+    setSlackWebhookInput(slackWebhookUrl);
+  }, [slackWebhookUrl]);
 
   useEffect(() => {
     setMounted(true);
@@ -94,6 +129,9 @@ export function ConfigPanel({
   const remainingVmSeconds = mounted
     ? getRemainingVmSeconds(agent.vmStatus, agent.vmLastActive, nowMs)
     : 120;
+
+  const hasGoogleTool = agent.tools.some((slug) => isGoogleWorkspaceTool(slug));
+  const hasSlackTool = agent.tools.includes('slack');
 
   const handleShuffleAvatar = () => {
     const randomSeed =
@@ -127,6 +165,130 @@ export function ConfigPanel({
     const targetId = agent.agentId;
     await deleteAgent(targetId);
     router.push('/workspace');
+  };
+
+  const handleSyncLiveWorkspace = async () => {
+    let token = workspaceToken;
+    if (!token) {
+      token = await connectGoogleWorkspaceOAuth();
+    }
+    if (!token) return;
+
+    setSyncingWorkspace(true);
+    try {
+      const res = await fetch('/api/workspace', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      setLiveGmailList(data.gmailMessages || []);
+      setLiveCalendarList(data.calendarEvents || []);
+      addToast({
+        title: 'Google Workspace Synchronisé',
+        description: `${(data.gmailMessages || []).length} e-mails Gmail · ${(data.calendarEvents || []).length} événements Agenda`,
+        type: 'success',
+      });
+    } catch (err) {
+      console.error('Workspace sync error:', err);
+      addToast({
+        title: 'Erreur de synchronisation Google Workspace',
+        description:
+          locale === 'fr'
+            ? 'Veuillez réautoriser votre session Google OAuth.'
+            : 'Please re-authorize your Google OAuth session.',
+        type: 'error',
+      });
+    } finally {
+      setSyncingWorkspace(false);
+    }
+  };
+
+  const handleConfirmWorkspaceMutation = async () => {
+    if (!pendingWorkspaceMutation) return;
+    const action = pendingWorkspaceMutation;
+    setExecutingMutation(true);
+
+    try {
+      if (action === 'post_slack') {
+        const res = await fetch('/api/workspace', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'post_slack',
+            slackWebhookUrl: slackWebhookInput,
+            slackText: `*[Orbit Agent: ${agent.name}]* Test de connexion en direct réussi (${new Date().toLocaleTimeString()}).`,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.delivered) {
+          throw new Error(data.error || 'Slack Webhook error');
+        }
+        addToast({
+          title: 'Message Slack envoyé',
+          description: 'Votre canal Slack a reçu la notification en direct.',
+          type: 'success',
+        });
+        setPendingWorkspaceMutation(null);
+        return;
+      }
+
+      let token = workspaceToken;
+      if (!token) {
+        token = await connectGoogleWorkspaceOAuth();
+      }
+      if (!token) {
+        setPendingWorkspaceMutation(null);
+        return;
+      }
+
+      const latestSummary =
+        executions[0]?.summary ||
+        agent.description ||
+        'Rapport généré par Orbit AI Agent.';
+
+      const res = await fetch('/api/workspace', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          action,
+          title: `${agent.name} — ${new Date().toLocaleDateString()}`,
+          content: latestSummary,
+          rows: [
+            ['Date', 'Agent', 'Résumé Exécutif'],
+            [new Date().toISOString(), agent.name, latestSummary],
+          ],
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Google Workspace write failed');
+      }
+
+      setCreatedWorkspaceUrl({
+        label: action === 'create_doc' ? 'Google Doc créé' : 'Google Sheet créé',
+        url: data.url,
+      });
+      addToast({
+        title: action === 'create_doc' ? 'Google Doc créé' : 'Google Sheet créé',
+        description: data.title,
+        type: 'success',
+      });
+    } catch (err) {
+      console.error('Workspace mutation failed:', err);
+      addToast({
+        title: 'Échec de l’opération',
+        description: err instanceof Error ? err.message : 'Erreur API',
+        type: 'error',
+      });
+    } finally {
+      setExecutingMutation(false);
+      setPendingWorkspaceMutation(null);
+    }
   };
 
   return (
@@ -406,7 +568,7 @@ export function ConfigPanel({
           </>
         )}
 
-        {/* TAB 2: CONNECTED TOOLS ONLY */}
+        {/* TAB 2: CONNECTED TOOLS & LIVE OAUTH / SLACK HUB */}
         {activeTab === 'tools' && (
           <div className="space-y-3">
             <div className="flex items-center justify-between">
@@ -427,6 +589,238 @@ export function ConfigPanel({
                 <span>{t.config.addToolBtn}</span>
               </button>
             </div>
+
+            {/* Mandatory Explicit User Confirmation Modal for Mutating Workspace / Slack Operations */}
+            {pendingWorkspaceMutation && (
+              <div className="rounded-xl border border-slate-900 bg-white p-3.5 space-y-2.5 shadow-sm">
+                <p className="text-xs font-bold text-slate-900">
+                  {pendingWorkspaceMutation === 'create_doc'
+                    ? locale === 'fr'
+                      ? 'Confirmer la création d’un document Google Docs ?'
+                      : locale === 'it'
+                        ? 'Confermare la creazione di un documento Google Docs?'
+                        : 'Confirm creating a new Google Doc?'
+                    : pendingWorkspaceMutation === 'create_sheet'
+                      ? locale === 'fr'
+                        ? 'Confirmer la création d’une feuille Google Sheets ?'
+                        : locale === 'it'
+                          ? 'Confermare la creazione di un foglio Google Sheets?'
+                          : 'Confirm creating a new Google Sheet?'
+                      : locale === 'fr'
+                        ? 'Confirmer l’envoi d’un message sur votre canal Slack ?'
+                        : locale === 'it'
+                          ? 'Confermare l’invio di un messaggio sul tuo canale Slack?'
+                          : 'Confirm sending a message to your Slack channel?'}
+                </p>
+                <p className="text-[11px] text-slate-600 leading-relaxed">
+                  {pendingWorkspaceMutation === 'post_slack'
+                    ? locale === 'fr'
+                      ? `Un message de synthèse de l'agent "${agent.name}" sera publié sur votre Webhook Slack configuré.`
+                      : `An agent digest from "${agent.name}" will be posted to your configured Slack Webhook.`
+                    : locale === 'fr'
+                      ? `Le fichier "${agent.name} — ${new Date().toLocaleDateString()}" sera créé et mis à jour dans votre compte Google Workspace.`
+                      : `The file "${agent.name} — ${new Date().toLocaleDateString()}" will be created and populated in your Google Workspace account.`}
+                </p>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={executingMutation}
+                    onClick={handleConfirmWorkspaceMutation}
+                    className="flex-1 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
+                  >
+                    {executingMutation
+                      ? locale === 'fr'
+                        ? 'Exécution...'
+                        : 'Executing...'
+                      : t.config.confirmBtn}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={executingMutation}
+                    onClick={() => setPendingWorkspaceMutation(null)}
+                    className="flex-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-700"
+                  >
+                    {t.config.cancelBtn}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Google Workspace Live OAuth Card */}
+            {hasGoogleTool && (
+              <div className="rounded-xl border border-slate-200 bg-white p-3.5 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <p className="text-xs font-bold text-slate-900">
+                      Google Workspace OAuth
+                    </p>
+                    <p className="text-[11px] text-slate-500">
+                      Gmail · Calendar · Docs · Sheets
+                    </p>
+                  </div>
+                  {workspaceToken ? (
+                    <span className="text-[11px] font-semibold text-emerald-700">
+                      OAuth Actif
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={connectGoogleWorkspaceOAuth}
+                      className="gsi-material-button inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-slate-800 hover:bg-slate-50 shadow-2xs"
+                    >
+                      <svg
+                        version="1.1"
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 48 48"
+                        className="h-3.5 w-3.5 shrink-0"
+                      >
+                        <path
+                          fill="#EA4335"
+                          d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"
+                        />
+                        <path
+                          fill="#4285F4"
+                          d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"
+                        />
+                        <path
+                          fill="#FBBC05"
+                          d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"
+                        />
+                        <path
+                          fill="#34A853"
+                          d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"
+                        />
+                      </svg>
+                      <span>Sign in with Google</span>
+                    </button>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-3 gap-1.5">
+                  <button
+                    type="button"
+                    disabled={syncingWorkspace}
+                    onClick={handleSyncLiveWorkspace}
+                    className="inline-flex items-center justify-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-[11px] font-medium text-slate-800 hover:bg-slate-100"
+                  >
+                    <RefreshCw
+                      className={`h-3 w-3 ${syncingWorkspace ? 'animate-spin' : ''}`}
+                    />
+                    <span>Gmail/Cal</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPendingWorkspaceMutation('create_doc')}
+                    className="inline-flex items-center justify-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-[11px] font-medium text-slate-800 hover:bg-slate-100"
+                  >
+                    <FileText className="h-3 w-3" />
+                    <span>+ Doc</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPendingWorkspaceMutation('create_sheet')}
+                    className="inline-flex items-center justify-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-[11px] font-medium text-slate-800 hover:bg-slate-100"
+                  >
+                    <Table className="h-3 w-3" />
+                    <span>+ Sheet</span>
+                  </button>
+                </div>
+
+                {createdWorkspaceUrl && (
+                  <a
+                    href={createdWorkspaceUrl.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center justify-between rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-medium text-emerald-800 hover:bg-emerald-100"
+                  >
+                    <span>{createdWorkspaceUrl.label}</span>
+                    <ExternalLink className="h-3.5 w-3.5" />
+                  </a>
+                )}
+
+                {liveGmailList.length > 0 && (
+                  <div className="space-y-1.5 pt-1 border-t border-slate-100">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                      Gmail ({liveGmailList.length})
+                    </p>
+                    {liveGmailList.slice(0, 3).map((m) => (
+                      <div
+                        key={m.id}
+                        className="rounded-lg bg-slate-50 p-2 text-[11px] border border-slate-100"
+                      >
+                        <p className="font-semibold text-slate-900 truncate">{m.subject}</p>
+                        <p className="text-slate-500 truncate">{m.from}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {liveCalendarList.length > 0 && (
+                  <div className="space-y-1.5 pt-1 border-t border-slate-100">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                      Google Calendar ({liveCalendarList.length})
+                    </p>
+                    {liveCalendarList.slice(0, 3).map((ev) => (
+                      <div
+                        key={ev.id}
+                        className="rounded-lg bg-slate-50 p-2 text-[11px] border border-slate-100"
+                      >
+                        <p className="font-semibold text-slate-900 truncate">{ev.summary}</p>
+                        <p className="text-slate-500 font-mono text-[10px]">{ev.start}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Real Slack Webhook Card */}
+            {hasSlackTool && (
+              <div className="rounded-xl border border-slate-200 bg-white p-3.5 space-y-2.5">
+                <p className="text-xs font-bold text-slate-900">
+                  Slack Incoming Webhook
+                </p>
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="url"
+                    value={slackWebhookInput}
+                    onChange={(e) => setSlackWebhookInput(e.target.value)}
+                    placeholder="https://hooks.slack.com/services/..."
+                    aria-label="Slack Webhook URL"
+                    className="flex-1 min-w-0 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[11px] font-mono text-slate-900 focus:bg-white focus:outline-none focus:border-slate-900"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSlackWebhookUrl(slackWebhookInput);
+                      addToast({
+                        title: 'Webhook Slack enregistré',
+                        type: 'success',
+                      });
+                    }}
+                    className="rounded-lg bg-slate-900 px-2.5 py-1.5 text-[11px] font-semibold text-white hover:bg-slate-800 shrink-0"
+                  >
+                    OK
+                  </button>
+                </div>
+                {slackWebhookInput.startsWith('https://hooks.slack.com/') && (
+                  <button
+                    type="button"
+                    onClick={() => setPendingWorkspaceMutation('post_slack')}
+                    className="w-full inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[11px] font-medium text-slate-800 hover:bg-slate-100"
+                  >
+                    <Send className="h-3 w-3" />
+                    <span>
+                      {locale === 'fr'
+                        ? 'Tester l’envoi Slack en direct'
+                        : locale === 'it'
+                          ? 'Testa invio Slack dal vivo'
+                          : 'Test live Slack delivery'}
+                    </span>
+                  </button>
+                )}
+              </div>
+            )}
 
             {agent.tools.length === 0 ? (
               <div className="rounded-xl border border-dashed border-slate-200 bg-white p-6 text-center space-y-2">
@@ -463,7 +857,11 @@ export function ConfigPanel({
                             {info?.name || slug.toUpperCase()}
                           </p>
                           <p className="text-[11px] text-emerald-700 font-medium">
-                            {t.config.activeMcpAccess}
+                            {isGoogleWorkspaceTool(slug) && workspaceToken
+                              ? 'Google Workspace OAuth Actif'
+                              : slug === 'slack' && slackWebhookUrl
+                                ? 'Slack Webhook Actif'
+                                : t.config.activeMcpAccess}
                           </p>
                         </div>
                       </div>
@@ -486,6 +884,48 @@ export function ConfigPanel({
         {/* TAB 3: SCHEDULE / ROUTINES */}
         {activeTab === 'schedule' && (
           <div className="space-y-3">
+            {/* Real-Time Auto-Scheduler Status Banner */}
+            <div className="rounded-xl border border-slate-200 bg-white p-3 flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className={`h-2 w-2 rounded-full ${
+                      autoSchedulerEnabled ? 'bg-emerald-500' : 'bg-slate-300'
+                    }`}
+                  />
+                  <p className="text-xs font-bold text-slate-900">
+                    {locale === 'fr'
+                      ? 'Auto-Scheduler Temps Réel'
+                      : locale === 'it'
+                        ? 'Auto-Scheduler Tempo Reale'
+                        : 'Real-Time Auto-Scheduler'}
+                  </p>
+                </div>
+                <p className="text-[11px] text-slate-500 font-mono tabular-nums mt-0.5">
+                  {autoSchedulerEnabled
+                    ? `${locale === 'fr' ? 'Actif · Vérif. auto (5s)' : 'Active · 5s tick'}${
+                        lastSchedulerTick ? ` · ${lastSchedulerTick}` : ''
+                      }`
+                    : locale === 'fr'
+                      ? 'En pause'
+                      : 'Paused'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAutoSchedulerEnabled(!autoSchedulerEnabled)}
+                className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-800 hover:bg-slate-100 shrink-0"
+              >
+                {autoSchedulerEnabled
+                  ? locale === 'fr'
+                    ? 'Désactiver'
+                    : 'Disable'
+                  : locale === 'fr'
+                    ? 'Activer'
+                    : 'Enable'}
+              </button>
+            </div>
+
             <div className="flex items-center justify-between gap-2">
               <div>
                 <h4 className="text-xs font-bold text-slate-900">
@@ -710,11 +1150,11 @@ export function ConfigPanel({
                       <div className="flex items-center justify-between text-[11px] text-slate-500 pt-1 border-t border-slate-100">
                         <span className="font-mono tabular-nums">
                           {t.config.nextLabel}:{' '}
-                          {new Date(rt.nextRunAt).toLocaleDateString([], {
-                            month: 'short',
-                            day: 'numeric',
-                          })}{' '}
-                          {formatTimeDisplay(rt.time)}
+                          {new Date(rt.nextRunAt).toLocaleTimeString([], {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            second: '2-digit',
+                          })}
                         </span>
                         <span className="font-mono text-slate-700">
                           {rt.targetChannel}
@@ -734,24 +1174,42 @@ export function ConfigPanel({
                           ))}
                         </div>
 
-                        <button
-                          type="button"
-                          disabled={isRunningThis}
-                          onClick={() => setConfirmRunRoutine(rt)}
-                          className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-50 transition-colors whitespace-nowrap"
-                        >
-                          {isRunningThis ? (
-                            <>
-                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                              <span>{t.config.runningInngest}</span>
-                            </>
-                          ) : (
-                            <>
-                              <Play className="h-3 w-3" />
-                              <span>{t.config.runNowBtn}</span>
-                            </>
-                          )}
-                        </button>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              scheduleRoutineInSeconds(agent.agentId, rt.routineId, 5)
+                            }
+                            title={
+                              locale === 'fr'
+                                ? 'Programmer une exécution automatique dans 5 secondes'
+                                : 'Schedule automatic execution in 5 seconds'
+                            }
+                            className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 transition-colors whitespace-nowrap"
+                          >
+                            <Zap className="h-3 w-3 text-amber-600" />
+                            <span>Auto (5s)</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            disabled={isRunningThis}
+                            onClick={() => setConfirmRunRoutine(rt)}
+                            className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-50 transition-colors whitespace-nowrap"
+                          >
+                            {isRunningThis ? (
+                              <>
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                <span>{t.config.runningInngest}</span>
+                              </>
+                            ) : (
+                              <>
+                                <Play className="h-3 w-3" />
+                                <span>{t.config.runNowBtn}</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
                       </div>
                     </div>
                   );
