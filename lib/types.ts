@@ -28,6 +28,24 @@ export interface ToolSuggestionItem {
   isConnected: boolean;
 }
 
+export interface ToolExecutionResultItem {
+  id: string;
+  title: string;
+  subtitle: string;
+  badge: string;
+  summary: string;
+  url?: string;
+}
+
+export interface ToolLiveExecutionReport {
+  slug: string;
+  toolName: string;
+  mode: 'live_api' | 'live_feed' | 'live_webhook' | 'mcp_session';
+  statusLabel: string;
+  executedAt: string;
+  items: ToolExecutionResultItem[];
+}
+
 export interface RoutineDraft {
   routineId?: string;
   name: string;
@@ -51,6 +69,7 @@ export interface VmActionTrace {
     source: string;
     timeAgo: string;
     summary: string;
+    link?: string;
   }[];
 }
 
@@ -62,6 +81,50 @@ export interface AgentStructuredResponse {
   routine?: RoutineDraft;
   vmTrace?: VmActionTrace;
   editingRoutineId?: string;
+}
+
+export interface KnowledgeDocument {
+  docId: string;
+  agentId: string;
+  name: string;
+  fileType: 'pdf' | 'csv' | 'txt' | 'md';
+  sizeBytes: number;
+  content: string;
+  summary: string;
+  createdAt: string;
+}
+
+export type AgentModelId = 'gemini-3-flash-preview' | 'gemini-3.1-pro-preview';
+
+export type AgentTone = 'executive' | 'analytical' | 'technical' | 'commercial';
+
+export type AgentOutputFormat = 'bullets' | 'markdown_report' | 'table' | 'concise';
+
+export type AgentAutonomyLevel = 'copilot' | 'semi_auto' | 'full_auto';
+
+export type VmTimeoutOption = 2 | 5 | 15 | 0; // 0 = Always active
+
+export interface AgentEventTrigger {
+  triggerId: string;
+  type: 'gmail_vip' | 'github_pr' | 'slack_mention' | 'webhook_json';
+  label: string;
+  filterValue: string;
+  isEnabled: boolean;
+}
+
+export interface AgentTemplatePreset {
+  templateId: string;
+  name: string;
+  badge: string;
+  description: string;
+  systemInstructions: string;
+  avatarSeed: string;
+  tools: string[];
+  model: AgentModelId;
+  tone: AgentTone;
+  outputFormat: AgentOutputFormat;
+  autonomyLevel: AgentAutonomyLevel;
+  defaultMemory: string[];
 }
 
 export interface AgentConfig {
@@ -76,6 +139,22 @@ export interface AgentConfig {
   vmStatus: VmStatus;
   vmLastActive: string;
   isActive: boolean;
+  handoffTargetAgentId?: string;
+  // Studio & Advanced Options (1-8)
+  model?: AgentModelId;
+  temperature?: number;
+  tone?: AgentTone;
+  outputFormat?: AgentOutputFormat;
+  responseLanguage?: 'auto' | 'fr' | 'en' | 'it';
+  autonomyLevel?: AgentAutonomyLevel;
+  maxDailyActions?: number;
+  allowedSlackChannels?: string;
+  memoryNotes?: string[];
+  customVariables?: Record<string, string>;
+  eventTriggers?: AgentEventTrigger[];
+  vmTimeoutMinutes?: VmTimeoutOption;
+  vmRegion?: 'eu-west-1' | 'us-east-1' | 'ap-northeast-1';
+  vmStartupScript?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -94,6 +173,7 @@ export interface AgentRoutine {
   tools: string[];
   targetChannel: string;
   isActive: boolean;
+  handoffTargetAgentId?: string;
   nextRunAt: string;
   lastRunAt: string;
   createdAt: string;
@@ -115,7 +195,7 @@ export interface RoutineExecution {
   agentId: string;
   ownerId: string;
   status: 'queued' | 'running' | 'completed' | 'failed';
-  triggerType: 'manual' | 'scheduled';
+  triggerType: 'manual' | 'scheduled' | 'webhook' | 'workflow';
   summary: string;
   stepsLog: RoutineStepLog[];
   startedAt: string;
@@ -143,3 +223,23 @@ export interface UserProfile {
   credits: number;
   isDemo: boolean;
 }
+
+export interface WorkspaceAnalyticsSummary {
+  totalRuns: number;
+  completedRuns: number;
+  successRatePercent: number;
+  avgDurationMs: number;
+  creditsUsed: number;
+  creditsRemaining: number;
+  manualRuns: number;
+  scheduledRuns: number;
+  webhookRuns: number;
+  workflowRuns: number;
+  totalKnowledgeDocs: number;
+  toolBreakdown: {
+    slug: string;
+    count: number;
+    percent: number;
+  }[];
+}
+

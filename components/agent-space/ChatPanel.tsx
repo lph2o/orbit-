@@ -11,6 +11,11 @@ import {
   TerminalSquare,
 } from 'lucide-react';
 import { AgentChatMessage, AgentConfig, AgentStructuredResponse } from '@/lib/types';
+import {
+  getAgentAutonomyBadge,
+  getAgentModelDisplayName,
+  getAgentToneLabel,
+} from '@/lib/orbit-logic';
 import { useOrbit } from '@/context/OrbitContext';
 import { AgentResponseView } from './AgentResponseView';
 
@@ -23,6 +28,7 @@ export function ChatPanel({
 }) {
   const {
     messagesByAgent,
+    knowledgeByAgent,
     editingRoutineByAgent,
     startEditingRoutine,
     appendChatMessage,
@@ -39,6 +45,7 @@ export function ChatPanel({
   const scrollEndRef = useRef<HTMLDivElement | null>(null);
 
   const messages = messagesByAgent[agent.agentId] || [];
+  const knowledgeDocs = knowledgeByAgent[agent.agentId] || [];
   const editingRoutine = editingRoutineByAgent[agent.agentId] || null;
 
   useEffect(() => {
@@ -87,6 +94,7 @@ export function ChatPanel({
           timezone,
           editingRoutine,
           locale,
+          knowledgeDocs,
         }),
       });
 
@@ -100,6 +108,18 @@ export function ChatPanel({
         const liveTrace = await browseVmUrl(agent.agentId, trimmed);
         if (liveTrace) {
           structured.vmTrace = liveTrace;
+          const itemsList = liveTrace.extractedItems
+            .map(
+              (item, idx) =>
+                `${idx + 1}. **${item.headline}** (${item.source} · ${item.timeAgo}) — ${item.summary}`
+            )
+            .join('\n');
+          structured.message =
+            locale === 'fr'
+              ? `J'ai ouvert le navigateur Cloud VM Desktop, navigué vers **${liveTrace.title}** et extrait les résultats principaux pour vous :\n\n${itemsList}`
+              : locale === 'it'
+                ? `Ho aperto il browser Cloud VM Desktop, navigato su **${liveTrace.title}** ed estratto i risultati principali per te:\n\n${itemsList}`
+                : `I opened the Cloud VM Desktop browser, navigated to **${liveTrace.title}**, and extracted the top results for you:\n\n${itemsList}`;
         } else if (structured.vmTrace) {
           await setVmStatusForAgent(agent.agentId, 'active', structured.vmTrace);
         }
@@ -168,7 +188,7 @@ export function ChatPanel({
             />
           </div>
           <div className="min-w-0">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <h1 className="text-sm font-bold text-slate-900 truncate">
                 {agent.name}
               </h1>
@@ -180,6 +200,24 @@ export function ChatPanel({
               >
                 {agent.isActive ? t.chat.activeAgent : t.chat.pausedAgent}
               </span>
+              <span className="text-xs text-slate-400">·</span>
+              <span className="text-[11px] font-mono font-semibold text-slate-800 bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded">
+                {getAgentModelDisplayName(agent.model)}
+              </span>
+              <span className="text-[11px] font-medium text-slate-700 bg-slate-50 border border-slate-200 px-1.5 py-0.5 rounded">
+                {getAgentAutonomyBadge(agent.autonomyLevel, locale)}
+              </span>
+              <span className="text-[11px] text-slate-600 hidden xl:inline">
+                {getAgentToneLabel(agent.tone, locale)}
+              </span>
+              {knowledgeDocs.length > 0 && (
+                <>
+                  <span className="text-xs text-slate-400">·</span>
+                  <span className="text-[11px] font-mono font-semibold text-slate-700">
+                    RAG ({knowledgeDocs.length} docs)
+                  </span>
+                </>
+              )}
             </div>
             <p className="text-xs text-slate-500 truncate mt-0.5">
               {agent.description || 'Autonomous AI Agent · Composio MCP & E2B Cloud VM'}
@@ -279,6 +317,7 @@ export function ChatPanel({
                   content={msg.content}
                   structured={msg.structured}
                   onRoutineSaved={() => onSwitchRightTab?.('schedule')}
+                  onContinuePrompt={(text) => sendPrompt(text)}
                 />
               </div>
             </div>

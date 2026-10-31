@@ -205,7 +205,7 @@ service cloud.firestore {
     }
 
     match /agents/{agentId} {
-      allow get: if isSignedIn() && isValidId(agentId) && existing().ownerId == request.auth.uid;
+      allow get: if isSignedIn() && isValidId(agentId) && (resource == null || existing().ownerId == request.auth.uid);
       allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
       allow create: if isVerifiedUser() && isValidId(agentId) &&
         isValidAgentConfig(incoming(), agentId) &&
@@ -230,7 +230,7 @@ service cloud.firestore {
 
       match /routines/{routineId} {
         allow get: if isSignedIn() && isValidId(agentId) && isValidId(routineId) &&
-          existing().ownerId == request.auth.uid && isAgentOwner(agentId);
+          (resource == null || (existing().ownerId == request.auth.uid && isAgentOwner(agentId)));
         allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
         allow create: if isVerifiedUser() && isValidId(agentId) && isValidId(routineId) &&
           isValidAgentRoutine(incoming(), agentId, routineId) &&
@@ -261,7 +261,7 @@ service cloud.firestore {
 
       match /executions/{executionId} {
         allow get: if isSignedIn() && isValidId(agentId) && isValidId(executionId) &&
-          existing().ownerId == request.auth.uid && isAgentOwner(agentId);
+          (resource == null || (existing().ownerId == request.auth.uid && isAgentOwner(agentId)));
         allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
         allow create: if isVerifiedUser() && isValidId(agentId) && isValidId(executionId) &&
           isValidRoutineExecution(incoming(), agentId, executionId) &&
@@ -284,7 +284,7 @@ service cloud.firestore {
 
       match /messages/{messageId} {
         allow get: if isSignedIn() && isValidId(agentId) && isValidId(messageId) &&
-          existing().ownerId == request.auth.uid && isAgentOwner(agentId);
+          (resource == null || (existing().ownerId == request.auth.uid && isAgentOwner(agentId)));
         allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
         allow create: if isVerifiedUser() && isValidId(agentId) && isValidId(messageId) &&
           isValidAgentChatMessage(incoming(), agentId, messageId) &&

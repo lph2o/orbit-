@@ -15,6 +15,7 @@ export function ToolMarketplaceModal() {
     closeMarketplace,
     agents,
     connectToolToAgent,
+    connectAllToolsToAgent,
     disconnectToolFromAgent,
     workspaceToken,
     connectGoogleWorkspaceOAuth,
@@ -60,6 +61,14 @@ export function ToolMarketplaceModal() {
     setConnectingSlug(null);
   };
 
+  const handleConnectAll = async () => {
+    if (!targetAgent) return;
+    setConnectingSlug('__all__');
+    await new Promise((r) => setTimeout(r, 150));
+    await connectAllToolsToAgent(targetAgent.agentId);
+    setConnectingSlug(null);
+  };
+
   const handleDisconnect = async (slug: string) => {
     if (!targetAgent) return;
     setConnectingSlug(slug);
@@ -101,7 +110,24 @@ export function ToolMarketplaceModal() {
             </p>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2.5">
+            {targetAgent && connectedSlugs.size < TOOL_CATALOG.length && (
+              <button
+                type="button"
+                disabled={connectingSlug === '__all__'}
+                onClick={handleConnectAll}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 transition-colors whitespace-nowrap"
+              >
+                <Check className="h-3.5 w-3.5" />
+                <span>
+                  {locale === 'fr'
+                    ? `Tout connecter (${TOOL_CATALOG.length} outils)`
+                    : locale === 'it'
+                      ? `Connetti tutti (${TOOL_CATALOG.length})`
+                      : `Connect All (${TOOL_CATALOG.length})`}
+                </span>
+              </button>
+            )}
             {agents.length > 0 && (
               <div className="flex items-center gap-2">
                 <label htmlFor="marketplace-agent-select" className="text-xs text-slate-600 whitespace-nowrap">
@@ -197,7 +223,7 @@ export function ToolMarketplaceModal() {
           {/* Real Slack Incoming Webhook Input */}
           <form
             onSubmit={handleSaveWebhook}
-            className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 flex-1"
+            className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 flex-1 min-w-0"
           >
             <Webhook className="h-4 w-4 text-slate-500 shrink-0" />
             <input
@@ -206,13 +232,13 @@ export function ToolMarketplaceModal() {
               onChange={(e) => setWebhookDraft(e.target.value)}
               placeholder="https://hooks.slack.com/services/..."
               aria-label="Slack Webhook URL"
-              className="flex-1 min-w-0 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none font-mono"
+              className="flex-1 w-0 min-w-0 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none font-mono"
             />
             <button
               type="submit"
               className="rounded-md bg-slate-900 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-slate-800 whitespace-nowrap shrink-0"
             >
-              {locale === 'fr' ? 'Enregistrer Slack' : locale === 'it' ? 'Salva Slack' : 'Save Slack'}
+              {locale === 'fr' ? 'Enregistrer' : locale === 'it' ? 'Salva' : 'Save'}
             </button>
           </form>
         </div>

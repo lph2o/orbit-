@@ -1,11 +1,18 @@
 'use client';
 
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   createUserWithEmailAndPassword,
   onAuthStateChanged,
   signInWithEmailAndPassword,
-  signInWithPopup,
   signOut,
   updateProfile,
 } from 'firebase/auth';
@@ -35,6 +42,7 @@ import {
   AgentChatMessage,
   AgentConfig,
   AgentRoutine,
+  KnowledgeDocument,
   RoutineDraft,
   RoutineExecution,
   UserProfile,
@@ -45,15 +53,18 @@ import {
   buildDiceBearAvatarUrl,
   buildVmActionTrace,
   computeNextRunAt,
+  createDefaultEventTriggers,
   filterThreeDayHistory,
   isRoutineDue,
   sanitizeId,
   shouldAutoPauseVm,
+  TOOL_CATALOG,
 } from '@/lib/orbit-logic';
 import { Dictionary, getDictionary, Locale } from '@/lib/i18n';
 import {
   DEMO_AGENTS,
   DEMO_EXECUTIONS,
+  DEMO_KNOWLEDGE_DOCS,
   DEMO_MESSAGES,
   DEMO_ROUTINES,
 } from '@/lib/seed-data';
@@ -76,6 +87,7 @@ interface OrbitContextValue {
   routinesByAgent: Record<string, AgentRoutine[]>;
   executionsByAgent: Record<string, RoutineExecution[]>;
   messagesByAgent: Record<string, AgentChatMessage[]>;
+  knowledgeByAgent: Record<string, KnowledgeDocument[]>;
   editingRoutineByAgent: Record<string, AgentRoutine | null>;
   activeVmTraceByAgent: Record<string, VmActionTrace | null>;
   isMarketplaceOpen: boolean;
@@ -100,13 +112,46 @@ interface OrbitContextValue {
     name: string;
     description: string;
     avatarSeed: string;
+    tools?: string[];
+    model?: AgentConfig['model'];
+    temperature?: number;
+    tone?: AgentConfig['tone'];
+    outputFormat?: AgentConfig['outputFormat'];
+    autonomyLevel?: AgentConfig['autonomyLevel'];
+    memoryNotes?: string[];
+    customVariables?: Record<string, string>;
+    vmTimeoutMinutes?: AgentConfig['vmTimeoutMinutes'];
   }) => Promise<AgentConfig>;
   updateAgentConfig: (
     agentId: string,
-    patch: Partial<Pick<AgentConfig, 'name' | 'description' | 'agentImage' | 'isActive'>>
+    patch: Partial<
+      Pick<
+        AgentConfig,
+        | 'name'
+        | 'description'
+        | 'agentImage'
+        | 'isActive'
+        | 'handoffTargetAgentId'
+        | 'model'
+        | 'temperature'
+        | 'tone'
+        | 'outputFormat'
+        | 'responseLanguage'
+        | 'autonomyLevel'
+        | 'maxDailyActions'
+        | 'allowedSlackChannels'
+        | 'memoryNotes'
+        | 'customVariables'
+        | 'eventTriggers'
+        | 'vmTimeoutMinutes'
+        | 'vmRegion'
+        | 'vmStartupScript'
+      >
+    >
   ) => Promise<void>;
   deleteAgent: (agentId: string) => Promise<void>;
   connectToolToAgent: (agentId: string, toolSlug: string) => Promise<void>;
+  connectAllToolsToAgent: (agentId: string) => Promise<void>;
   disconnectToolFromAgent: (agentId: string, toolSlug: string) => Promise<void>;
   setVmStatusForAgent: (
     agentId: string,
@@ -131,6 +176,26 @@ interface OrbitContextValue {
   connectGoogleWorkspaceOAuth: () => Promise<string | null>;
   slackWebhookUrl: string;
   setSlackWebhookUrl: (url: string) => void;
+  githubRepo: string;
+  setGithubRepo: (repo: string) => void;
+  githubToken: string;
+  setGithubToken: (token: string) => void;
+  notionToken: string;
+  setNotionToken: (token: string) => void;
+  notionParentId: string;
+  setNotionParentId: (id: string) => void;
+  addKnowledgeDocument: (agentId: string, docRecord: KnowledgeDocument) => void;
+  deleteKnowledgeDocument: (agentId: string, docId: string) => void;
+  runMultiAgentWorkflow: (
+    sourceAgentId: string,
+    targetAgentId: string,
+    topicPrompt?: string
+  ) => Promise<RoutineExecution | null>;
+  triggerIncomingWebhook: (
+    agentId: string,
+    eventType: string,
+    payload: Record<string, unknown>
+  ) => Promise<RoutineExecution | null>;
   autoSchedulerEnabled: boolean;
   setAutoSchedulerEnabled: (enabled: boolean) => void;
   lastSchedulerTick: string;
@@ -146,7 +211,12 @@ const STORAGE_KEYS = {
   ROUTINES: 'orbit_routines_v1',
   EXECUTIONS: 'orbit_executions_v1',
   MESSAGES: 'orbit_messages_v1',
+  KNOWLEDGE: 'orbit_knowledge_v1',
   SLACK_WEBHOOK: 'orbit_slack_webhook_v1',
+  GITHUB_REPO: 'orbit_github_repo_v1',
+  GITHUB_TOKEN: 'orbit_github_token_v1',
+  NOTION_TOKEN: 'orbit_notion_token_v1',
+  NOTION_PARENT: 'orbit_notion_parent_v1',
 };
 
 const GUEST_USER: UserProfile = {
@@ -169,6 +239,8 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
     useState<Record<string, RoutineExecution[]>>(DEMO_EXECUTIONS);
   const [messagesByAgent, setMessagesByAgent] =
     useState<Record<string, AgentChatMessage[]>>(DEMO_MESSAGES);
+  const [knowledgeByAgent, setKnowledgeByAgent] =
+    useState<Record<string, KnowledgeDocument[]>>(DEMO_KNOWLEDGE_DOCS);
   const [editingRoutineByAgent, setEditingRoutineByAgent] = useState<
     Record<string, AgentRoutine | null>
   >({});
@@ -181,8 +253,78 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [workspaceToken, setWorkspaceToken] = useState<string | null>(null);
   const [slackWebhookUrl, setSlackWebhookUrlState] = useState<string>('');
+  const [githubRepo, setGithubRepoState] = useState<string>('vercel/next.js');
+  const [githubToken, setGithubTokenState] = useState<string>('');
+  const [notionToken, setNotionTokenState] = useState<string>('');
+  const [notionParentId, setNotionParentIdState] = useState<string>('');
   const [autoSchedulerEnabled, setAutoSchedulerEnabled] = useState<boolean>(true);
   const [lastSchedulerTick, setLastSchedulerTick] = useState<string>('');
+  const [firestoreReady, setFirestoreReady] = useState<boolean>(false);
+
+  const agentsRef = useRef<AgentConfig[]>(agents);
+  useEffect(() => {
+    agentsRef.current = agents;
+  }, [agents]);
+
+  const persistedAgentIdsRef = useRef<Set<string>>(new Set());
+  const inFlightAgentSyncRef = useRef<Map<string, Promise<boolean>>>(new Map());
+
+  const ensureAgentInFirestore = useCallback(async (agentId: string): Promise<boolean> => {
+    const fbUser = auth.currentUser;
+    if (!fbUser || !fbUser.emailVerified) return false;
+
+    const cleanAgentId = sanitizeId(agentId, 'agent');
+    const currentUid = sanitizeId(fbUser.uid, 'user');
+
+    if (persistedAgentIdsRef.current.has(cleanAgentId)) {
+      return true;
+    }
+
+    const existingPromise = inFlightAgentSyncRef.current.get(cleanAgentId);
+    if (existingPromise) {
+      return existingPromise;
+    }
+
+    const syncPromise = (async (): Promise<boolean> => {
+      const agentRef = doc(db, 'agents', cleanAgentId);
+      try {
+        const snap = await getDoc(agentRef);
+        if (!snap.exists()) {
+          const ag =
+            agentsRef.current.find((a) => a.agentId === agentId || a.agentId === cleanAgentId) ||
+            DEMO_AGENTS[0];
+          await setDoc(agentRef, {
+            agentId: cleanAgentId,
+            ownerId: currentUid,
+            name: (ag.name || 'Orbit Agent').trim().slice(0, 120) || 'Orbit Agent',
+            description: (ag.description || '').slice(0, 4000),
+            agentImage: (ag.agentImage || buildDiceBearAvatarUrl(cleanAgentId)).slice(0, 500),
+            tools: Array.isArray(ag.tools) ? ag.tools.slice(0, 10) : [],
+            composioSessionId: (
+              ag.composioSessionId || `sess_comp_${Math.random().toString(36).slice(2, 10)}`
+            ).slice(0, 128),
+            sandboxId: (
+              ag.sandboxId || `sbx_e2b_${Math.random().toString(36).slice(2, 10)}`
+            ).slice(0, 128),
+            vmStatus: ag.vmStatus || 'inactive',
+            vmLastActive: (ag.vmLastActive || '').slice(0, 64),
+            isActive: Boolean(ag.isActive),
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        }
+        persistedAgentIdsRef.current.add(cleanAgentId);
+        return true;
+      } catch (err) {
+        handleFirestoreError(err, OperationType.CREATE, `agents/${cleanAgentId}`);
+      } finally {
+        inFlightAgentSyncRef.current.delete(cleanAgentId);
+      }
+    })();
+
+    inFlightAgentSyncRef.current.set(cleanAgentId, syncPromise);
+    return syncPromise;
+  }, []);
 
   const t = useMemo(() => getDictionary(locale), [locale]);
 
@@ -201,6 +343,38 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
     } catch {}
   }, []);
 
+  const setGithubRepo = useCallback((repo: string) => {
+    const clean = (repo || 'vercel/next.js').trim();
+    setGithubRepoState(clean);
+    try {
+      localStorage.setItem(STORAGE_KEYS.GITHUB_REPO, clean);
+    } catch {}
+  }, []);
+
+  const setGithubToken = useCallback((token: string) => {
+    const clean = token.trim();
+    setGithubTokenState(clean);
+    try {
+      localStorage.setItem(STORAGE_KEYS.GITHUB_TOKEN, clean);
+    } catch {}
+  }, []);
+
+  const setNotionToken = useCallback((token: string) => {
+    const clean = token.trim();
+    setNotionTokenState(clean);
+    try {
+      localStorage.setItem(STORAGE_KEYS.NOTION_TOKEN, clean);
+    } catch {}
+  }, []);
+
+  const setNotionParentId = useCallback((id: string) => {
+    const clean = id.trim();
+    setNotionParentIdState(clean);
+    try {
+      localStorage.setItem(STORAGE_KEYS.NOTION_PARENT, clean);
+    } catch {}
+  }, []);
+
   const addToast = useCallback((toast: Omit<ToastItem, 'id'>) => {
     const id = `toast_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     setToasts((prev) => [...prev.slice(-3), { ...toast, id }]);
@@ -212,6 +386,45 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
   const dismissToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((item) => item.id !== id));
   }, []);
+
+  const addKnowledgeDocument = useCallback(
+    (agentId: string, docRecord: KnowledgeDocument) => {
+      setKnowledgeByAgent((prev) => ({
+        ...prev,
+        [agentId]: [docRecord, ...(prev[agentId] || [])],
+      }));
+      addToast({
+        title:
+          locale === 'fr'
+            ? 'Document indexé dans la base RAG'
+            : locale === 'it'
+              ? 'Documento indicizzato nella Knowledge Base RAG'
+              : 'Document indexed in RAG Knowledge Base',
+        description: `${docRecord.name} (${docRecord.fileType.toUpperCase()})`,
+        type: 'success',
+      });
+    },
+    [addToast, locale]
+  );
+
+  const deleteKnowledgeDocument = useCallback(
+    (agentId: string, docId: string) => {
+      setKnowledgeByAgent((prev) => ({
+        ...prev,
+        [agentId]: (prev[agentId] || []).filter((d) => d.docId !== docId),
+      }));
+      addToast({
+        title:
+          locale === 'fr'
+            ? 'Document retiré de la base RAG'
+            : locale === 'it'
+              ? 'Documento rimosso dalla Knowledge Base RAG'
+              : 'Document removed from RAG Knowledge Base',
+        type: 'info',
+      });
+    },
+    [addToast, locale]
+  );
 
   // Load persisted state from localStorage on client mount
   useEffect(() => {
@@ -225,11 +438,20 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
       if (savedSlackWebhook) {
         setSlackWebhookUrlState(savedSlackWebhook);
       }
+      const savedGhRepo = localStorage.getItem(STORAGE_KEYS.GITHUB_REPO);
+      if (savedGhRepo) setGithubRepoState(savedGhRepo);
+      const savedGhToken = localStorage.getItem(STORAGE_KEYS.GITHUB_TOKEN);
+      if (savedGhToken) setGithubTokenState(savedGhToken);
+      const savedNotionToken = localStorage.getItem(STORAGE_KEYS.NOTION_TOKEN);
+      if (savedNotionToken) setNotionTokenState(savedNotionToken);
+      const savedNotionParent = localStorage.getItem(STORAGE_KEYS.NOTION_PARENT);
+      if (savedNotionParent) setNotionParentIdState(savedNotionParent);
 
       const savedAgents = localStorage.getItem(STORAGE_KEYS.AGENTS);
       const savedRoutines = localStorage.getItem(STORAGE_KEYS.ROUTINES);
       const savedExecutions = localStorage.getItem(STORAGE_KEYS.EXECUTIONS);
       const savedMessages = localStorage.getItem(STORAGE_KEYS.MESSAGES);
+      const savedKnowledge = localStorage.getItem(STORAGE_KEYS.KNOWLEDGE);
 
       if (savedAgents) {
         const parsed = JSON.parse(savedAgents);
@@ -241,7 +463,22 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
         );
       }
       if (savedRoutines) {
-        setRoutinesByAgent(JSON.parse(savedRoutines));
+        const parsedRoutines: Record<string, AgentRoutine[]> = JSON.parse(savedRoutines);
+        const nowMs = Date.now();
+        const normalizedRoutines: Record<string, AgentRoutine[]> = {};
+        for (const [k, list] of Object.entries(parsedRoutines)) {
+          normalizedRoutines[k] = (list || []).map((r) => {
+            const nextMs = Date.parse(r.nextRunAt || '');
+            if (Number.isNaN(nextMs) || nextMs <= nowMs) {
+              return {
+                ...r,
+                nextRunAt: computeNextRunAt(r.frequency, r.time, r.days, new Date()),
+              };
+            }
+            return r;
+          });
+        }
+        setRoutinesByAgent(normalizedRoutines);
       }
       if (savedExecutions) {
         const parsedExecs: Record<string, RoutineExecution[]> = JSON.parse(savedExecutions);
@@ -258,6 +495,12 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
           cleanedMsgs[k] = filterThreeDayHistory(list);
         }
         setMessagesByAgent(cleanedMsgs);
+      }
+      if (savedKnowledge) {
+        const parsedKnowledge: Record<string, KnowledgeDocument[]> = JSON.parse(savedKnowledge);
+        if (parsedKnowledge && typeof parsedKnowledge === 'object') {
+          setKnowledgeByAgent((prev) => ({ ...prev, ...parsedKnowledge }));
+        }
       }
     } catch (e) {
       console.warn('Failed to hydrate local Orbit state:', e);
@@ -288,6 +531,12 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
       localStorage.setItem(STORAGE_KEYS.MESSAGES, JSON.stringify(messagesByAgent));
     } catch {}
   }, [messagesByAgent]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEYS.KNOWLEDGE, JSON.stringify(knowledgeByAgent));
+    } catch {}
+  }, [knowledgeByAgent]);
 
   // Listen for Firebase Auth state and load user agents + subcollections from Firestore
   useEffect(() => {
@@ -371,7 +620,9 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
           if (!snap.empty) {
             const loadedAgents: AgentConfig[] = snap.docs.map((d) => {
               const data = d.data();
+              const existingLocal = agentsRef.current.find((a) => a.agentId === data.agentId);
               return {
+                ...(existingLocal || {}),
                 agentId: data.agentId,
                 ownerId: data.ownerId,
                 name: data.name,
@@ -383,6 +634,20 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
                 vmStatus: (data.vmStatus as VmStatus) || 'inactive',
                 vmLastActive: data.vmLastActive || '',
                 isActive: Boolean(data.isActive),
+                model: existingLocal?.model || 'gemini-3-flash-preview',
+                temperature: existingLocal?.temperature ?? 0.2,
+                tone: existingLocal?.tone || 'executive',
+                outputFormat: existingLocal?.outputFormat || 'bullets',
+                responseLanguage: existingLocal?.responseLanguage || 'auto',
+                autonomyLevel: existingLocal?.autonomyLevel || 'copilot',
+                maxDailyActions: existingLocal?.maxDailyActions ?? 25,
+                allowedSlackChannels: existingLocal?.allowedSlackChannels || '#new-channel, #general',
+                memoryNotes: existingLocal?.memoryNotes || [],
+                customVariables: existingLocal?.customVariables || {},
+                eventTriggers: existingLocal?.eventTriggers || createDefaultEventTriggers(),
+                vmTimeoutMinutes: existingLocal?.vmTimeoutMinutes ?? 5,
+                vmRegion: existingLocal?.vmRegion || 'eu-west-1',
+                vmStartupScript: existingLocal?.vmStartupScript || '',
                 createdAt: new Date().toISOString(),
                 updatedAt: new Date().toISOString(),
               };
@@ -394,6 +659,7 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
             const nextMessages: Record<string, AgentChatMessage[]> = {};
 
             for (const ag of loadedAgents) {
+              persistedAgentIdsRef.current.add(ag.agentId);
               try {
                 const rSnap = await getDocs(collection(db, 'agents', ag.agentId, 'routines'));
                 nextRoutines[ag.agentId] = rSnap.docs.map((docItem) => {
@@ -471,17 +737,28 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
             setRoutinesByAgent((prev) => ({ ...prev, ...nextRoutines }));
             setExecutionsByAgent((prev) => ({ ...prev, ...nextExecutions }));
             setMessagesByAgent((prev) => ({ ...prev, ...nextMessages }));
+          } else {
+            // Seed starter agents into Firestore for this authenticated user so subcollection writes succeed
+            setAgents((prev) => prev.map((ag) => ({ ...ag, ownerId: uid })));
+            for (const ag of agentsRef.current) {
+              try {
+                await ensureAgentInFirestore(ag.agentId);
+              } catch (seedErr) {
+                console.warn('Initial agent seed warning:', seedErr);
+              }
+            }
           }
         } catch (err) {
           handleFirestoreError(err, OperationType.LIST, 'agents');
         }
       }
 
+      setFirestoreReady(true);
       setAuthReady(true);
     });
 
     return () => unsubscribe();
-  }, []);
+  }, [ensureAgentInFirestore]);
 
   // 2-minute E2B Cloud VM Desktop auto-pause timer (Chapter 17)
   useEffect(() => {
@@ -490,7 +767,7 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
       setAgents((prev) => {
         let changed = false;
         const next = prev.map((ag) => {
-          if (shouldAutoPauseVm(ag.vmStatus, ag.vmLastActive, nowMs)) {
+          if (shouldAutoPauseVm(ag.vmStatus, ag.vmLastActive, nowMs, ag.vmTimeoutMinutes ?? 2)) {
             changed = true;
             return {
               ...ag,
@@ -672,10 +949,28 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
       name,
       description,
       avatarSeed,
+      tools = [],
+      model = 'gemini-3-flash-preview',
+      temperature = 0.2,
+      tone = 'executive',
+      outputFormat = 'bullets',
+      autonomyLevel = 'copilot',
+      memoryNotes = [],
+      customVariables = {},
+      vmTimeoutMinutes = 5,
     }: {
       name: string;
       description: string;
       avatarSeed: string;
+      tools?: string[];
+      model?: AgentConfig['model'];
+      temperature?: number;
+      tone?: AgentConfig['tone'];
+      outputFormat?: AgentConfig['outputFormat'];
+      autonomyLevel?: AgentConfig['autonomyLevel'];
+      memoryNotes?: string[];
+      customVariables?: Record<string, string>;
+      vmTimeoutMinutes?: AgentConfig['vmTimeoutMinutes'];
     }): Promise<AgentConfig> => {
       const cleanName = name.trim().slice(0, 120) || 'Untitled Agent';
       const cleanDesc = (description || '').trim().slice(0, 4000);
@@ -684,6 +979,9 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
       const agentImage = buildDiceBearAvatarUrl(avatarSeed || agentId).slice(0, 500);
       const composioSessionId = `sess_comp_${Math.random().toString(36).slice(2, 10)}`;
       const sandboxId = `sbx_e2b_${Math.random().toString(36).slice(2, 10)}`;
+      const cleanTools = Array.isArray(tools)
+        ? Array.from(new Set(tools.map((s) => s.toLowerCase().trim()))).slice(0, 20)
+        : [];
 
       const newAgent: AgentConfig = {
         agentId,
@@ -691,12 +989,26 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
         name: cleanName,
         description: cleanDesc,
         agentImage,
-        tools: [],
+        tools: cleanTools,
         composioSessionId,
         sandboxId,
         vmStatus: 'inactive',
         vmLastActive: '',
         isActive: true,
+        model,
+        temperature,
+        tone,
+        outputFormat,
+        responseLanguage: 'auto',
+        autonomyLevel,
+        maxDailyActions: 25,
+        allowedSlackChannels: '#new-channel, #general',
+        memoryNotes,
+        customVariables,
+        eventTriggers: createDefaultEventTriggers(),
+        vmTimeoutMinutes,
+        vmRegion: 'eu-west-1',
+        vmStartupScript: '',
         createdAt: nowIso,
         updatedAt: nowIso,
       };
@@ -725,15 +1037,16 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
       setMessagesByAgent((prev) => ({ ...prev, [agentId]: [welcomeMsg] }));
 
       if (!user.isDemo && auth.currentUser?.emailVerified) {
+        const currentUid = sanitizeId(auth.currentUser.uid, 'user');
         const agentRef = doc(db, 'agents', agentId);
         try {
           await setDoc(agentRef, {
             agentId: newAgent.agentId,
-            ownerId: newAgent.ownerId,
+            ownerId: currentUid,
             name: newAgent.name,
             description: newAgent.description,
             agentImage: newAgent.agentImage,
-            tools: newAgent.tools,
+            tools: newAgent.tools.slice(0, 10),
             composioSessionId: newAgent.composioSessionId,
             sandboxId: newAgent.sandboxId,
             vmStatus: newAgent.vmStatus,
@@ -742,6 +1055,7 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
           });
+          persistedAgentIdsRef.current.add(agentId);
         } catch (err) {
           handleFirestoreError(err, OperationType.CREATE, `agents/${agentId}`);
         }
@@ -761,7 +1075,30 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
   const updateAgentConfig = useCallback(
     async (
       agentId: string,
-      patch: Partial<Pick<AgentConfig, 'name' | 'description' | 'agentImage' | 'isActive'>>
+      patch: Partial<
+        Pick<
+          AgentConfig,
+          | 'name'
+          | 'description'
+          | 'agentImage'
+          | 'isActive'
+          | 'handoffTargetAgentId'
+          | 'model'
+          | 'temperature'
+          | 'tone'
+          | 'outputFormat'
+          | 'responseLanguage'
+          | 'autonomyLevel'
+          | 'maxDailyActions'
+          | 'allowedSlackChannels'
+          | 'memoryNotes'
+          | 'customVariables'
+          | 'eventTriggers'
+          | 'vmTimeoutMinutes'
+          | 'vmRegion'
+          | 'vmStartupScript'
+        >
+      >
     ) => {
       const nowIso = new Date().toISOString();
       let updatedTarget: AgentConfig | null = null;
@@ -771,10 +1108,15 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
           if (ag.agentId !== agentId) return ag;
           updatedTarget = {
             ...ag,
+            ...patch,
             name: (patch.name ?? ag.name).trim().slice(0, 120) || ag.name,
             description: (patch.description ?? ag.description).slice(0, 4000),
             agentImage: (patch.agentImage ?? ag.agentImage).slice(0, 500),
             isActive: patch.isActive ?? ag.isActive,
+            handoffTargetAgentId:
+              patch.handoffTargetAgentId !== undefined
+                ? patch.handoffTargetAgentId
+                : ag.handoffTargetAgentId,
             updatedAt: nowIso,
           };
           return updatedTarget;
@@ -784,6 +1126,7 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
       if (!user.isDemo && auth.currentUser?.emailVerified && updatedTarget) {
         const target = updatedTarget as AgentConfig;
         try {
+          await ensureAgentInFirestore(agentId);
           await updateDoc(doc(db, 'agents', agentId), {
             name: target.name,
             description: target.description,
@@ -802,15 +1145,19 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
         type: 'success',
       });
     },
-    [user.isDemo, t, addToast]
+    [user.isDemo, ensureAgentInFirestore, t, addToast]
   );
 
   const deleteAgent = useCallback(
     async (agentId: string) => {
       setAgents((prev) => prev.filter((ag) => ag.agentId !== agentId));
+      persistedAgentIdsRef.current.delete(agentId);
       if (!user.isDemo && auth.currentUser?.emailVerified) {
         try {
-          await deleteDoc(doc(db, 'agents', agentId));
+          const snap = await getDoc(doc(db, 'agents', agentId));
+          if (snap.exists()) {
+            await deleteDoc(doc(db, 'agents', agentId));
+          }
         } catch (err) {
           handleFirestoreError(err, OperationType.DELETE, `agents/${agentId}`);
         }
@@ -834,7 +1181,7 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
         prev.map((ag) => {
           if (ag.agentId !== agentId) return ag;
           const set = new Set(ag.tools);
-          if (set.size < 10) set.add(cleanSlug);
+          if (set.size < 20) set.add(cleanSlug);
           nextTools = Array.from(set);
           sessionToSave =
             ag.composioSessionId || `sess_comp_${Math.random().toString(36).slice(2, 10)}`;
@@ -849,8 +1196,9 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
 
       if (!user.isDemo && auth.currentUser?.emailVerified) {
         try {
+          await ensureAgentInFirestore(agentId);
           await updateDoc(doc(db, 'agents', agentId), {
-            tools: nextTools,
+            tools: nextTools.slice(0, 10),
             composioSessionId: sessionToSave,
             updatedAt: serverTimestamp(),
           });
@@ -865,7 +1213,53 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
         type: 'success',
       });
     },
-    [user.isDemo, addToast]
+    [user.isDemo, ensureAgentInFirestore, addToast]
+  );
+
+  const connectAllToolsToAgent = useCallback(
+    async (agentId: string) => {
+      const allSlugs = TOOL_CATALOG.map((tl) => tl.slug);
+      let sessionToSave = '';
+
+      setAgents((prev) =>
+        prev.map((ag) => {
+          if (ag.agentId !== agentId) return ag;
+          sessionToSave =
+            ag.composioSessionId || `sess_comp_${Math.random().toString(36).slice(2, 10)}`;
+          return {
+            ...ag,
+            tools: allSlugs,
+            composioSessionId: sessionToSave,
+            updatedAt: new Date().toISOString(),
+          };
+        })
+      );
+
+      if (!user.isDemo && auth.currentUser?.emailVerified) {
+        try {
+          await ensureAgentInFirestore(agentId);
+          await updateDoc(doc(db, 'agents', agentId), {
+            tools: allSlugs.slice(0, 10),
+            composioSessionId: sessionToSave,
+            updatedAt: serverTimestamp(),
+          });
+        } catch (err) {
+          handleFirestoreError(err, OperationType.UPDATE, `agents/${agentId}`);
+        }
+      }
+
+      addToast({
+        title:
+          locale === 'fr'
+            ? '12 outils MCP connectés'
+            : locale === 'it'
+              ? '12 strumenti MCP connessi'
+              : 'All 12 MCP tools connected',
+        description: `Session: ${sessionToSave || 'active'}`,
+        type: 'success',
+      });
+    },
+    [user.isDemo, ensureAgentInFirestore, addToast, locale]
   );
 
   const disconnectToolFromAgent = useCallback(
@@ -889,6 +1283,7 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
 
       if (!user.isDemo && auth.currentUser?.emailVerified) {
         try {
+          await ensureAgentInFirestore(agentId);
           await updateDoc(doc(db, 'agents', agentId), {
             tools: nextTools,
             composioSessionId: sessionToSave,
@@ -905,7 +1300,7 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
         type: 'info',
       });
     },
-    [user.isDemo, addToast]
+    [user.isDemo, ensureAgentInFirestore, addToast]
   );
 
   const setVmStatusForAgent = useCallback(
@@ -933,6 +1328,7 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
 
       if (!user.isDemo && auth.currentUser?.emailVerified) {
         try {
+          await ensureAgentInFirestore(agentId);
           await updateDoc(doc(db, 'agents', agentId), {
             sandboxId: sbxId,
             vmStatus: status,
@@ -944,7 +1340,7 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
         }
       }
     },
-    [user.isDemo]
+    [user.isDemo, ensureAgentInFirestore]
   );
 
   const browseVmUrl = useCallback(
@@ -986,25 +1382,28 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
       });
 
       if (!user.isDemo && auth.currentUser?.emailVerified) {
+        const cleanAgentId = sanitizeId(agentId, 'agent');
+        const currentUid = sanitizeId(auth.currentUser.uid, 'user');
         const msgId = sanitizeId(message.messageId, 'msg');
         try {
-          await setDoc(doc(db, 'agents', agentId, 'messages', msgId), {
+          await ensureAgentInFirestore(cleanAgentId);
+          await setDoc(doc(db, 'agents', cleanAgentId, 'messages', msgId), {
             messageId: msgId,
-            agentId: sanitizeId(agentId, 'agent'),
-            ownerId: sanitizeId(user.uid, 'user'),
-            role: message.role,
-            content: message.content.slice(0, 8000),
-            responseType: message.responseType,
+            agentId: cleanAgentId,
+            ownerId: currentUid,
+            role: message.role === 'user' ? 'user' : 'agent',
+            content: (message.content || '').slice(0, 8000),
+            responseType: message.responseType || 'message',
             payloadJson: JSON.stringify(message.structured || {}).slice(0, 16000),
-            timeLabel: message.timeLabel.slice(0, 64),
+            timeLabel: (message.timeLabel || '').slice(0, 64),
             createdAt: serverTimestamp(),
           });
         } catch (err) {
-          handleFirestoreError(err, OperationType.CREATE, `agents/${agentId}/messages/${msgId}`);
+          handleFirestoreError(err, OperationType.CREATE, `agents/${cleanAgentId}/messages/${msgId}`);
         }
       }
     },
-    [user]
+    [user.isDemo, ensureAgentInFirestore]
   );
 
   const clearAgentChat = useCallback(async (agentId: string) => {
@@ -1018,16 +1417,18 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
     async (agentId: string, draft: RoutineDraft): Promise<AgentRoutine> => {
       const nowIso = new Date().toISOString();
       const isEditing = Boolean(draft.routineId);
+      const cleanAgentId = sanitizeId(agentId, 'agent');
       const routineId = sanitizeId(
         draft.routineId || `routine_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         'routine'
       );
       const nextRunAt = computeNextRunAt(draft.frequency, draft.time, draft.days);
+      const currentUid = sanitizeId(auth.currentUser?.uid || user.uid, 'user');
 
       const routineRecord: AgentRoutine = {
         routineId,
-        agentId: sanitizeId(agentId, 'agent'),
-        ownerId: sanitizeId(user.uid, 'user'),
+        agentId: cleanAgentId,
+        ownerId: currentUid,
         name: draft.name.trim().slice(0, 160) || 'Automated Routine',
         goal: draft.goal.trim().slice(0, 1000),
         instructions: draft.instructions.trim().slice(0, 4000),
@@ -1056,9 +1457,11 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
       setEditingRoutineByAgent((prev) => ({ ...prev, [agentId]: null }));
 
       if (!user.isDemo && auth.currentUser?.emailVerified) {
-        const routineRef = doc(db, 'agents', agentId, 'routines', routineId);
+        const routineRef = doc(db, 'agents', cleanAgentId, 'routines', routineId);
         try {
-          if (isEditing) {
+          await ensureAgentInFirestore(cleanAgentId);
+          const rSnap = await getDoc(routineRef);
+          if (rSnap.exists()) {
             await updateDoc(routineRef, {
               name: routineRecord.name,
               goal: routineRecord.goal,
@@ -1077,6 +1480,7 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
           } else {
             await setDoc(routineRef, {
               ...routineRecord,
+              ownerId: sanitizeId(auth.currentUser.uid, 'user'),
               createdAt: serverTimestamp(),
               updatedAt: serverTimestamp(),
             });
@@ -1085,7 +1489,7 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
           handleFirestoreError(
             err,
             isEditing ? OperationType.UPDATE : OperationType.CREATE,
-            `agents/${agentId}/routines/${routineId}`
+            `agents/${cleanAgentId}/routines/${routineId}`
           );
         }
       }
@@ -1098,38 +1502,70 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
 
       return routineRecord;
     },
-    [user, t, addToast]
+    [user, ensureAgentInFirestore, t, addToast]
   );
 
   const toggleRoutineActive = useCallback(
     async (agentId: string, routineId: string, nextActive: boolean) => {
       let targetNextRun = '';
       let targetLastRun = '';
+      let targetRoutine: AgentRoutine | null = null;
+
       setRoutinesByAgent((prev) => {
         const list = (prev[agentId] || []).map((r) => {
           if (r.routineId !== routineId) return r;
           targetNextRun = nextActive ? computeNextRunAt(r.frequency, r.time, r.days) : r.nextRunAt;
           targetLastRun = r.lastRunAt;
-          return {
+          const updated = {
             ...r,
             isActive: nextActive,
             nextRunAt: targetNextRun,
             updatedAt: new Date().toISOString(),
           };
+          targetRoutine = updated;
+          return updated;
         });
         return { ...prev, [agentId]: list };
       });
 
       if (!user.isDemo && auth.currentUser?.emailVerified) {
+        const cleanAgentId = sanitizeId(agentId, 'agent');
+        const cleanRoutineId = sanitizeId(routineId, 'routine');
+        const routineRef = doc(db, 'agents', cleanAgentId, 'routines', cleanRoutineId);
         try {
-          await updateDoc(doc(db, 'agents', agentId, 'routines', routineId), {
-            isActive: nextActive,
-            nextRunAt: targetNextRun,
-            lastRunAt: targetLastRun,
-            updatedAt: serverTimestamp(),
-          });
+          await ensureAgentInFirestore(cleanAgentId);
+          const rSnap = await getDoc(routineRef);
+          if (rSnap.exists()) {
+            await updateDoc(routineRef, {
+              isActive: nextActive,
+              nextRunAt: targetNextRun,
+              lastRunAt: targetLastRun,
+              updatedAt: serverTimestamp(),
+            });
+          } else if (targetRoutine) {
+            const rt = targetRoutine as AgentRoutine;
+            await setDoc(routineRef, {
+              routineId: cleanRoutineId,
+              agentId: cleanAgentId,
+              ownerId: sanitizeId(auth.currentUser.uid, 'user'),
+              name: rt.name.slice(0, 160),
+              goal: rt.goal.slice(0, 1000),
+              instructions: rt.instructions.slice(0, 4000),
+              frequency: rt.frequency,
+              time: rt.time.slice(0, 32),
+              timezone: rt.timezone.slice(0, 64),
+              days: rt.days.slice(0, 7),
+              tools: rt.tools.slice(0, 10),
+              targetChannel: rt.targetChannel.slice(0, 120),
+              isActive: nextActive,
+              nextRunAt: targetNextRun.slice(0, 64),
+              lastRunAt: targetLastRun.slice(0, 64),
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+          }
         } catch (err) {
-          handleFirestoreError(err, OperationType.UPDATE, `agents/${agentId}/routines/${routineId}`);
+          handleFirestoreError(err, OperationType.UPDATE, `agents/${cleanAgentId}/routines/${cleanRoutineId}`);
         }
       }
 
@@ -1138,7 +1574,7 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
         type: 'info',
       });
     },
-    [user.isDemo, t, addToast]
+    [user.isDemo, ensureAgentInFirestore, t, addToast]
   );
 
   const deleteRoutine = useCallback(
@@ -1149,10 +1585,15 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
       }));
 
       if (!user.isDemo && auth.currentUser?.emailVerified) {
+        const cleanAgentId = sanitizeId(agentId, 'agent');
+        const cleanRoutineId = sanitizeId(routineId, 'routine');
         try {
-          await deleteDoc(doc(db, 'agents', agentId, 'routines', routineId));
+          const rSnap = await getDoc(doc(db, 'agents', cleanAgentId, 'routines', cleanRoutineId));
+          if (rSnap.exists()) {
+            await deleteDoc(doc(db, 'agents', cleanAgentId, 'routines', cleanRoutineId));
+          }
         } catch (err) {
-          handleFirestoreError(err, OperationType.DELETE, `agents/${agentId}/routines/${routineId}`);
+          handleFirestoreError(err, OperationType.DELETE, `agents/${cleanAgentId}/routines/${cleanRoutineId}`);
         }
       }
 
@@ -1167,6 +1608,168 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
   const startEditingRoutine = useCallback((agentId: string, routine: AgentRoutine | null) => {
     setEditingRoutineByAgent((prev) => ({ ...prev, [agentId]: routine }));
   }, []);
+
+  const runMultiAgentWorkflow = useCallback(
+    async (
+      sourceAgentId: string,
+      targetAgentId: string,
+      topicPrompt?: string
+    ): Promise<RoutineExecution | null> => {
+      const sourceAgent = agents.find((a) => a.agentId === sourceAgentId);
+      const targetAgent = agents.find((a) => a.agentId === targetAgentId);
+      if (!sourceAgent || !targetAgent) return null;
+
+      try {
+        const res = await fetch('/api/workflows/chain', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sourceAgent,
+            targetAgent,
+            topicPrompt,
+            locale,
+            sourceDocs: knowledgeByAgent[sourceAgentId] || [],
+            targetDocs: knowledgeByAgent[targetAgentId] || [],
+            slackWebhookUrl,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.execution) {
+          throw new Error(data.error || 'Workflow error');
+        }
+
+        const wfExec: RoutineExecution = data.execution;
+        const srcExec: RoutineExecution = {
+          ...wfExec,
+          executionId: sanitizeId(`exec_wf_src_${Date.now()}`, 'exec'),
+          agentId: sourceAgentId,
+          ownerId: sourceAgent.ownerId,
+          summary: data.stage1Output || wfExec.summary,
+        };
+
+        setExecutionsByAgent((prev) => ({
+          ...prev,
+          [sourceAgentId]: [srcExec, ...filterThreeDayHistory(prev[sourceAgentId] || [])],
+          [targetAgentId]: [wfExec, ...filterThreeDayHistory(prev[targetAgentId] || [])],
+        }));
+
+        const srcChat: AgentChatMessage = {
+          messageId: sanitizeId(`msg_wf_src_${Date.now()}`, 'msg'),
+          agentId: sourceAgentId,
+          ownerId: sanitizeId(auth.currentUser?.uid || sourceAgent.ownerId, 'user'),
+          role: 'agent',
+          content: `🔗 **Workflow Multi-Agents (Étape 1 → ${targetAgent.name})** :\n\n${data.stage1Output}`,
+          responseType: 'message',
+          timeLabel: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          createdAt: new Date().toISOString(),
+        };
+        const tgtChat: AgentChatMessage = {
+          messageId: sanitizeId(`msg_wf_tgt_${Date.now() + 1}`, 'msg'),
+          agentId: targetAgentId,
+          ownerId: sanitizeId(auth.currentUser?.uid || targetAgent.ownerId, 'user'),
+          role: 'agent',
+          content: `🔗 **Workflow Multi-Agents (Reçu de ${sourceAgent.name})** :\n\n${data.stage2Output}`,
+          responseType: 'message',
+          timeLabel: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          createdAt: new Date().toISOString(),
+        };
+
+        await appendChatMessage(sourceAgentId, srcChat);
+        await appendChatMessage(targetAgentId, tgtChat);
+
+        addToast({
+          title:
+            locale === 'fr'
+              ? `Pipeline Multi-Agents terminé (${sourceAgent.name} → ${targetAgent.name})`
+              : `Multi-Agent Pipeline completed (${sourceAgent.name} → ${targetAgent.name})`,
+          description: wfExec.summary.slice(0, 120),
+          type: 'success',
+        });
+        return wfExec;
+      } catch (err) {
+        console.error('Multi-agent workflow error:', err);
+        addToast({
+          title:
+            locale === 'fr'
+              ? 'Échec du pipeline multi-agents'
+              : 'Multi-agent pipeline failed',
+          type: 'error',
+        });
+        return null;
+      }
+    },
+    [agents, locale, knowledgeByAgent, slackWebhookUrl, appendChatMessage, addToast]
+  );
+
+  const triggerIncomingWebhook = useCallback(
+    async (
+      agentId: string,
+      eventType: string,
+      payload: Record<string, unknown>
+    ): Promise<RoutineExecution | null> => {
+      const agent = agents.find((a) => a.agentId === agentId);
+      if (!agent) return null;
+
+      try {
+        const res = await fetch(`/api/webhooks/agent/${encodeURIComponent(agentId)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            eventType,
+            payload,
+            agent,
+            knowledgeDocs: knowledgeByAgent[agentId] || [],
+            locale,
+            slackWebhookUrl,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.execution) {
+          throw new Error(data.error || 'Webhook trigger error');
+        }
+
+        const execution: RoutineExecution = data.execution;
+        setExecutionsByAgent((prev) => ({
+          ...prev,
+          [agentId]: [execution, ...filterThreeDayHistory(prev[agentId] || [])],
+        }));
+
+        const chatMsg: AgentChatMessage = {
+          messageId: sanitizeId(`msg_wh_${Date.now()}`, 'msg'),
+          agentId,
+          ownerId: sanitizeId(auth.currentUser?.uid || agent.ownerId, 'user'),
+          role: 'agent',
+          content: data.chatNotification,
+          responseType: 'message',
+          timeLabel: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          createdAt: new Date().toISOString(),
+        };
+        await appendChatMessage(agentId, chatMsg);
+
+        addToast({
+          title:
+            locale === 'fr'
+              ? `Webhook entrant traité (${eventType})`
+              : `Incoming Webhook processed (${eventType})`,
+          description: execution.summary.slice(0, 120),
+          type: 'success',
+        });
+
+        return execution;
+      } catch (err) {
+        console.error('Webhook simulation error:', err);
+        addToast({
+          title:
+            locale === 'fr'
+              ? 'Erreur lors du déclenchement Webhook'
+              : 'Webhook trigger error',
+          type: 'error',
+        });
+        return null;
+      }
+    },
+    [agents, knowledgeByAgent, locale, slackWebhookUrl, appendChatMessage, addToast]
+  );
 
   const runRoutineNow = useCallback(
     async (
@@ -1196,6 +1799,9 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
             triggerType,
             locale,
             slackWebhookUrl,
+            knowledgeDocs: knowledgeByAgent[agentId] || [],
+            githubRepo,
+            githubToken,
           }),
         });
         const data = await res.json();
@@ -1223,7 +1829,7 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
         const chatMsg: AgentChatMessage = {
           messageId: sanitizeId(`msg_exec_${Date.now()}`, 'msg'),
           agentId,
-          ownerId: agent.ownerId,
+          ownerId: sanitizeId(auth.currentUser?.uid || agent.ownerId, 'user'),
           role: 'agent',
           content: data.chatNotification,
           responseType: 'message',
@@ -1232,15 +1838,24 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
         };
         await appendChatMessage(agentId, chatMsg);
 
+        // If this agent or routine has a handoffTargetAgentId configured, automatically chain to Agent B
+        const targetHandoffId = routine.handoffTargetAgentId || agent.handoffTargetAgentId;
+        if (targetHandoffId && targetHandoffId !== agentId) {
+          await runMultiAgentWorkflow(agentId, targetHandoffId, execution.summary);
+        }
+
         if (!user.isDemo && auth.currentUser?.emailVerified) {
+          const cleanAgentId = sanitizeId(agentId, 'agent');
+          const currentUid = sanitizeId(auth.currentUser.uid, 'user');
           const execId = sanitizeId(execution.executionId, 'exec');
           try {
-            await setDoc(doc(db, 'agents', agentId, 'executions', execId), {
+            await ensureAgentInFirestore(cleanAgentId);
+            await setDoc(doc(db, 'agents', cleanAgentId, 'executions', execId), {
               executionId: execId,
               routineId: sanitizeId(routine.routineId, 'routine'),
               routineName: routine.name.slice(0, 160),
-              agentId: sanitizeId(agentId, 'agent'),
-              ownerId: sanitizeId(user.uid, 'user'),
+              agentId: cleanAgentId,
+              ownerId: currentUid,
               status: execution.status,
               triggerType: execution.triggerType,
               summary: execution.summary.slice(0, 4000),
@@ -1250,7 +1865,7 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
               createdAt: serverTimestamp(),
             });
           } catch (err) {
-            handleFirestoreError(err, OperationType.CREATE, `agents/${agentId}/executions/${execId}`);
+            handleFirestoreError(err, OperationType.CREATE, `agents/${cleanAgentId}/executions/${execId}`);
           }
         }
 
@@ -1273,11 +1888,16 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
     [
       agents,
       routinesByAgent,
-      user,
+      user.isDemo,
       locale,
       t,
       workspaceToken,
       slackWebhookUrl,
+      knowledgeByAgent,
+      githubRepo,
+      githubToken,
+      runMultiAgentWorkflow,
+      ensureAgentInFirestore,
       appendChatMessage,
       addToast,
     ]
@@ -1321,7 +1941,7 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
 
   // Real-time Auto-Scheduler: checks every 5 seconds for any active routine whose nextRunAt <= now
   useEffect(() => {
-    if (!autoSchedulerEnabled || !isAuthenticated) return;
+    if (!autoSchedulerEnabled || !isAuthenticated || !firestoreReady) return;
 
     const interval = setInterval(() => {
       const nowMs = Date.now();
@@ -1346,7 +1966,7 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
     }, 5000);
 
     return () => clearInterval(interval);
-  }, [autoSchedulerEnabled, isAuthenticated, agents, routinesByAgent, runRoutineNow]);
+  }, [autoSchedulerEnabled, isAuthenticated, firestoreReady, agents, routinesByAgent, runRoutineNow]);
 
   const runHourlyCronCheck = useCallback(
     async (agentId: string): Promise<number> => {
@@ -1378,6 +1998,7 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
       routinesByAgent,
       executionsByAgent,
       messagesByAgent,
+      knowledgeByAgent,
       editingRoutineByAgent,
       activeVmTraceByAgent,
       isMarketplaceOpen,
@@ -1397,22 +2018,35 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
       updateAgentConfig,
       deleteAgent,
       connectToolToAgent,
+      connectAllToolsToAgent,
       disconnectToolFromAgent,
       setVmStatusForAgent,
       browseVmUrl,
       touchVmActivity,
       appendChatMessage,
       clearAgentChat,
+      addKnowledgeDocument,
+      deleteKnowledgeDocument,
       createOrUpdateRoutine,
       toggleRoutineActive,
       deleteRoutine,
       startEditingRoutine,
       runRoutineNow,
       runHourlyCronCheck,
+      runMultiAgentWorkflow,
+      triggerIncomingWebhook,
       workspaceToken,
       connectGoogleWorkspaceOAuth,
       slackWebhookUrl,
       setSlackWebhookUrl,
+      githubRepo,
+      setGithubRepo,
+      githubToken,
+      setGithubToken,
+      notionToken,
+      setNotionToken,
+      notionParentId,
+      setNotionParentId,
       autoSchedulerEnabled,
       setAutoSchedulerEnabled,
       lastSchedulerTick,
@@ -1429,6 +2063,7 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
       routinesByAgent,
       executionsByAgent,
       messagesByAgent,
+      knowledgeByAgent,
       editingRoutineByAgent,
       activeVmTraceByAgent,
       isMarketplaceOpen,
@@ -1448,22 +2083,31 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
       updateAgentConfig,
       deleteAgent,
       connectToolToAgent,
+      connectAllToolsToAgent,
       disconnectToolFromAgent,
       setVmStatusForAgent,
       browseVmUrl,
       touchVmActivity,
       appendChatMessage,
       clearAgentChat,
+      addKnowledgeDocument,
+      deleteKnowledgeDocument,
       createOrUpdateRoutine,
       toggleRoutineActive,
       deleteRoutine,
       startEditingRoutine,
       runRoutineNow,
       runHourlyCronCheck,
+      runMultiAgentWorkflow,
+      triggerIncomingWebhook,
       workspaceToken,
       connectGoogleWorkspaceOAuth,
       slackWebhookUrl,
       setSlackWebhookUrl,
+      githubRepo,
+      githubToken,
+      notionToken,
+      notionParentId,
       autoSchedulerEnabled,
       lastSchedulerTick,
       scheduleRoutineInSeconds,
@@ -1480,3 +2124,4 @@ export function useOrbit(): OrbitContextValue {
   }
   return ctx;
 }
+

@@ -1,12 +1,23 @@
 import { GoogleGenAI } from '@google/genai';
 import { NextRequest, NextResponse } from 'next/server';
-import { computeNextRunAt, simulateRoutineExecutionSteps } from '@/lib/orbit-logic';
+import {
+  computeNextRunAt,
+  retrieveRelevantKnowledgeChunks,
+  simulateRoutineExecutionSteps,
+} from '@/lib/orbit-logic';
 import { Locale } from '@/lib/i18n';
-import { AgentConfig, AgentRoutine, RoutineExecution } from '@/lib/types';
+import {
+  AgentConfig,
+  AgentRoutine,
+  KnowledgeDocument,
+  RoutineExecution,
+} from '@/lib/types';
 import {
   fetchLiveCalendarEvents,
+  fetchLiveGitHubRepoActivity,
   fetchLiveGmailMessages,
   LiveCalendarEvent,
+  LiveGitHubItem,
   LiveGmailMessage,
   postToSlackWebhook,
 } from '@/lib/workspace-server';
@@ -36,12 +47,18 @@ export async function POST(req: NextRequest) {
       triggerType = 'manual',
       locale = 'fr',
       slackWebhookUrl,
+      knowledgeDocs = [],
+      githubRepo = 'vercel/next.js',
+      githubToken = '',
     }: {
       routine: AgentRoutine;
       agent: AgentConfig;
       triggerType?: 'manual' | 'scheduled';
       locale?: Locale;
       slackWebhookUrl?: string;
+      knowledgeDocs?: KnowledgeDocument[];
+      githubRepo?: string;
+      githubToken?: string;
     } = body;
 
     if (!routine || !agent) {
@@ -58,11 +75,23 @@ export async function POST(req: NextRequest) {
       locale
     );
 
-    // 1. Fetch live Google Workspace data if Bearer token is provided
+    // 1. Fetch live Google Workspace & GitHub data
     let liveGmail: LiveGmailMessage[] = [];
     let liveCalendar: LiveCalendarEvent[] = [];
+    let liveGitHubPulls: LiveGitHubItem[] = [];
+    let liveGitHubIssues: LiveGitHubItem[] = [];
 
     const allTools = new Set([...(routine.tools || []), ...(agent.tools || [])]);
+
+    if (allTools.has('github')) {
+      try {
+        const ghData = await fetchLiveGitHubRepoActivity(githubRepo || 'vercel/next.js', githubToken, 4);
+        liveGitHubPulls = ghData.pulls;
+        liveGitHubIssues = ghData.issues;
+      } catch (err) {
+        console.warn('Live GitHub fetch skipped during routine run:', err);
+      }
+    }
 
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const fetchStart = Date.now();
@@ -95,7 +124,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 2. Synthesize summary with Gemini 3 Flash
+    // 2. Synthesize summary with Gemini 3 Flash + RAG + Live GitHub/Workspace
     let finalSummary = defaultSummary;
     if (liveGmail.length > 0) {
       const subjects = liveGmail
@@ -107,7 +136,24 @@ export async function POST(req: NextRequest) {
           : locale === 'it'
             ? `Routine "${routine.name}" completata (Gmail OAuth live): ${liveGmail.length} email analizzate (${subjects}) e riepilogo preparato per ${routine.targetChannel || '#new-channel'}.`
             : `Completed "${routine.name}" (Live Gmail OAuth): Analyzed ${liveGmail.length} emails (${subjects}) and prepared digest for ${routine.targetChannel || '#new-channel'}.`;
+    } else if (liveGitHubPulls.length > 0) {
+      const prTitles = liveGitHubPulls
+        .slice(0, 3)
+        .map((p) => `#${p.number} ${p.title} (@${p.author})`)
+        .join(', ');
+      finalSummary =
+        locale === 'fr'
+          ? `Routine "${routine.name}" terminée (GitHub API en direct sur ${githubRepo}) : ${liveGitHubPulls.length} Pull Request(s) ouverte(s) auditée(s) (${prTitles}) et ${liveGitHubIssues.length} Issue(s) vérifiée(s).`
+          : locale === 'it'
+            ? `Routine "${routine.name}" completata (GitHub API live su ${githubRepo}): ${liveGitHubPulls.length} Pull Request analizzate (${prTitles}).`
+            : `Completed "${routine.name}" (Live GitHub API on ${githubRepo}): Audited ${liveGitHubPulls.length} open Pull Request(s) (${prTitles}) and ${liveGitHubIssues.length} issue(s).`;
     }
+
+    const relevantRagDocs = retrieveRelevantKnowledgeChunks(
+      knowledgeDocs,
+      `${routine.name} ${routine.goal} ${routine.instructions}`,
+      2
+    );
 
     const ai = getGenAIClient();
     if (ai) {
@@ -130,6 +176,16 @@ export async function POST(req: NextRequest) {
                 .map((e, i) => `${i + 1}. Event: ${e.summary} | Start: ${e.start}`)
                 .join('\n')}`
             : '',
+          liveGitHubPulls.length > 0
+            ? `Live GitHub Pull Requests (${githubRepo}):\n${liveGitHubPulls
+                .map((p) => `- PR #${p.number}: ${p.title} by @${p.author}`)
+                .join('\n')}`
+            : '',
+          relevantRagDocs.length > 0
+            ? `Enterprise RAG Knowledge Base Documents:\n${relevantRagDocs
+                .map((d) => `- [${d.name}]: ${d.summary}`)
+                .join('\n')}`
+            : '',
         ]
           .filter(Boolean)
           .join('\n\n');
@@ -143,7 +199,7 @@ Routine Goal: ${routine.goal}
 Routine Instructions: ${routine.instructions}
 Connected Tools: ${routine.tools.join(', ') || 'Cloud VM Browser'}
 Target Channel: ${routine.targetChannel || '#new-channel'}
-${workspaceContext ? `\nREAL USER WORKSPACE DATA:\n${workspaceContext}` : ''}`,
+${workspaceContext ? `\nREAL USER WORKSPACE & RAG DATA:\n${workspaceContext}` : ''}`,
         });
         const text = (geminiRes.text ?? '').trim();
         if (text.length > 20) {

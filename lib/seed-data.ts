@@ -2,9 +2,10 @@ import {
   AgentChatMessage,
   AgentConfig,
   AgentRoutine,
+  KnowledgeDocument,
   RoutineExecution,
 } from './types';
-import { buildDiceBearAvatarUrl, computeNextRunAt } from './orbit-logic';
+import { buildDiceBearAvatarUrl, computeNextRunAt, createDefaultEventTriggers } from './orbit-logic';
 
 const SEED_BASE_MS = Date.parse('2026-10-30T20:00:00.000Z');
 
@@ -22,6 +23,29 @@ export const DEMO_AGENTS: AgentConfig[] = [
     vmStatus: 'active',
     vmLastActive: new Date(SEED_BASE_MS).toISOString(),
     isActive: true,
+    handoffTargetAgentId: 'agent_youtube_scout',
+    model: 'gemini-3-flash-preview',
+    temperature: 0.2,
+    tone: 'executive',
+    outputFormat: 'bullets',
+    responseLanguage: 'auto',
+    autonomyLevel: 'copilot',
+    maxDailyActions: 25,
+    allowedSlackChannels: '#new-channel, #general, #leadership',
+    memoryNotes: [
+      'Signature e-mail : Cordialement, Direction Générale Orbit',
+      'Prioriser les e-mails contenant : Facture, Contrat, Urgent, Production',
+      'Format de briefing préféré : 3 points clés + Actions prioritaires',
+    ],
+    customVariables: {
+      CANAL_SLACK_DEFAUT: '#new-channel',
+      HEURE_BRIEFING: '08:00',
+      EQUIPE_CIBLE: 'Direction & Engineering',
+    },
+    eventTriggers: createDefaultEventTriggers(),
+    vmTimeoutMinutes: 5,
+    vmRegion: 'eu-west-1',
+    vmStartupScript: 'google-chrome --headless=new https://news.google.com/search?q=Intelligence+Artificielle&hl=fr',
     createdAt: new Date(SEED_BASE_MS - 2 * 24 * 60 * 60 * 1000).toISOString(),
     updatedAt: new Date(SEED_BASE_MS).toISOString(),
   },
@@ -38,6 +62,27 @@ export const DEMO_AGENTS: AgentConfig[] = [
     vmStatus: 'paused',
     vmLastActive: new Date(SEED_BASE_MS - 15 * 60 * 1000).toISOString(),
     isActive: true,
+    handoffTargetAgentId: 'agent_mickey_daily',
+    model: 'gemini-3.1-pro-preview',
+    temperature: 0.1,
+    tone: 'technical',
+    outputFormat: 'markdown_report',
+    responseLanguage: 'auto',
+    autonomyLevel: 'copilot',
+    maxDailyActions: 50,
+    allowedSlackChannels: '#engineering-alerts, #security',
+    memoryNotes: [
+      'Dépôt principal : vercel/next.js',
+      'Bloquer toute PR exposant des clés API ou modifiant firestore.rules sans test',
+    ],
+    customVariables: {
+      REPO_GITHUB: 'vercel/next.js',
+      CANAL_SLACK_DEFAUT: '#engineering-alerts',
+    },
+    eventTriggers: createDefaultEventTriggers(),
+    vmTimeoutMinutes: 2,
+    vmRegion: 'us-east-1',
+    vmStartupScript: 'gh pr list --limit 10',
     createdAt: new Date(SEED_BASE_MS - 24 * 60 * 60 * 1000).toISOString(),
     updatedAt: new Date(SEED_BASE_MS - 60 * 60 * 1000).toISOString(),
   },
@@ -54,6 +99,27 @@ export const DEMO_AGENTS: AgentConfig[] = [
     vmStatus: 'inactive',
     vmLastActive: '',
     isActive: true,
+    handoffTargetAgentId: 'agent_mickey_daily',
+    model: 'gemini-3.1-pro-preview',
+    temperature: 0.4,
+    tone: 'analytical',
+    outputFormat: 'markdown_report',
+    responseLanguage: 'auto',
+    autonomyLevel: 'full_auto',
+    maxDailyActions: 30,
+    allowedSlackChannels: '#new-channel',
+    memoryNotes: [
+      'Subreddits suivis : r/LocalLLaMA, r/MachineLearning, r/SaaS',
+      'Compiler les synthèses hebdomadaires dans Notion et Google Docs',
+    ],
+    customVariables: {
+      SUBREDDITS: 'r/LocalLLaMA, r/MachineLearning',
+      FORMAT_EXPORT: 'Google Docs + Notion',
+    },
+    eventTriggers: createDefaultEventTriggers(),
+    vmTimeoutMinutes: 15,
+    vmRegion: 'eu-west-1',
+    vmStartupScript: 'google-chrome https://www.reddit.com/r/LocalLLaMA',
     createdAt: new Date(SEED_BASE_MS - 12 * 60 * 60 * 1000).toISOString(),
     updatedAt: new Date(SEED_BASE_MS - 2 * 60 * 60 * 1000).toISOString(),
   },
@@ -285,3 +351,61 @@ export const DEMO_MESSAGES: Record<string, AgentChatMessage[]> = {
     },
   ],
 };
+
+export const DEMO_KNOWLEDGE_DOCS: Record<string, KnowledgeDocument[]> = {
+  agent_mickey_daily: [
+    {
+      docId: 'doc_sla_enterprise_pdf',
+      agentId: 'agent_mickey_daily',
+      name: 'Contrat_SLA_Entreprise_Orbit_2026.pdf',
+      fileType: 'pdf',
+      sizeBytes: 48200,
+      summary:
+        'Engagement SLA disponibilité 99.95%, temps de réponse P1 < 15 minutes sur Slack #new-channel, et escalade directe vers l’astreinte Cloud Run.',
+      content:
+        'CONTRAT SLA ENTREPRISE ORBIT 2026\n1. Disponibilité garantie : 99.95% mensuel sur toutes les régions Cloud Run.\n2. Incidents Critiques (P1) : Temps de première réponse inférieur à 15 minutes, notification immédiate sur #new-channel.\n3. Pénalités de retard : Crédit de service de 10% par tranche de 30 minutes d’indisponibilité au-delà du seuil SLA.\n4. Interlocuteur exécutif : Direction Produit & Sécurité.',
+      createdAt: new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString(),
+    },
+    {
+      docId: 'doc_pricing_catalog_csv',
+      agentId: 'agent_mickey_daily',
+      name: 'Catalogue_Tarifs_Clients_Q4.csv',
+      fileType: 'csv',
+      sizeBytes: 14500,
+      summary:
+        'Tableau CSV comprenant 3 offres SaaS (Starter 49€/mois, Pro 199€/mois, Enterprise 890€/mois) et quotas d’exécutions.',
+      content:
+        'Headers: Plan, Prix_Mensuel_EUR, Agents_Inclus, Credits_Mensuels, Support_SLA\nRow 1: Starter | 49 | 3 | 500 | 24h Email\nRow 2: Pro | 199 | 15 | 5000 | 4h Slack\nRow 3: Enterprise | 890 | Illimité | 50000 | 15min Dédié 24/7',
+      createdAt: new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString(),
+    },
+  ],
+  agent_code_reviewer: [
+    {
+      docId: 'doc_sec_checklist_txt',
+      agentId: 'agent_code_reviewer',
+      name: 'Procedure_Securite_PR_CodeReview.txt',
+      fileType: 'txt',
+      sizeBytes: 19400,
+      summary:
+        'Règles d’audit de code : interdiction de clés API en clair, validation stricte des règles Firestore et tests unitaires obligatoires.',
+      content:
+        'PROCÉDURE INTERNE REVUE DE CODE & SÉCURITÉ PR\n- Règle 1 : Aucune clé secrète (GEMINI_API_KEY, GitHub PAT, Notion Secret) ne doit jamais être exposée côté client.\n- Règle 2 : Toute écriture Firestore doit valider ownerId == request.auth.uid.\n- Règle 3 : Toute action destructive sur Google Workspace (gmail.send, docs) exige une boîte de confirmation explicite.',
+      createdAt: new Date(Date.now() - 10 * 60 * 60 * 1000).toISOString(),
+    },
+  ],
+  agent_youtube_scout: [
+    {
+      docId: 'doc_editorial_guide_txt',
+      agentId: 'agent_youtube_scout',
+      name: 'Charte_Editoriale_Veille_IA.txt',
+      fileType: 'txt',
+      sizeBytes: 11200,
+      summary:
+        'Format standard des synthèses de veille : 3 points clés exécutifs, sources vérifiées (GitHub, ArXiv, YouTube) et plan d’action.',
+      content:
+        'CHARTE ÉDITORIALE VEILLE IA & PRODUIT\nChaque rapport transmis à un autre agent ou publié dans Notion/Google Docs doit inclure : 1) Résumé exécutif en 3 phrases, 2) Liens et métriques sources, 3) Recommandation d’implémentation technique pour l’équipe.',
+      createdAt: new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString(),
+    },
+  ],
+};
+
