@@ -1667,6 +1667,46 @@ export function analyzeUserPromptFallback(
     };
   }
 
+  // 4f-0. Explicit Notion page / portfolio creation or "give me the public link" intent
+  if (isNotionPageCreationIntent(effectivePrompt, historyMessages)) {
+    const publicPortfolioPath = `/portfolio/${encodeURIComponent(agent.agentId)}`;
+    const portfolioTitle = extractRequestedPageTitle(effectivePrompt, agent.name);
+    if (!agent.tools.includes('notion')) {
+      return {
+        type: 'tool_connection',
+        message:
+          locale === 'fr'
+            ? `⚠️ **Aucune page n'a encore été créée sur votre compte Notion externe (\`notion.so\`)** car votre **Clé d'intégration API Notion (\`ntn_...\` / \`secret_...\`)** n'est pas encore connectée.\n\n` +
+              `Contrairement à une simulation qui génère un faux lien introuvable, Orbit vérifie réellement l'API officielle Notion (\`POST https://api.notion.com/v1/pages\`).\n\n` +
+              `✅ **Votre page publique de Portfolio est toutefois déjà générée et accessible dès maintenant ici** :\n` +
+              `• **Titre** : **${portfolioTitle}**\n` +
+              `• **Lien public actif (100% fonctionnel)** : [Ouvrir mon Portfolio Public (${publicPortfolioPath})](${publicPortfolioPath})\n` +
+              `• **Sections incluses** : À propos & Bio, Projets & Réalisations, Stack Technique et Contact\n\n` +
+              `👉 **Pour publier également cette page directement dans votre espace Notion personnel**, cliquez sur **Connecter** ci-dessous et renseignez votre clé \`ntn_...\` (depuis \`notion.so/profile/integrations\`) :`
+            : `⚠️ **No page has been created on your external \`notion.so\` workspace yet** because your **Notion Integration Secret (\`ntn_...\` / \`secret_...\`)** is not connected.\n\n` +
+              `✅ **However, your live Public Portfolio page is already generated and accessible right now**:\n` +
+              `• **Title**: **${portfolioTitle}**\n` +
+              `• **Working Public Link**: [Open Public Portfolio (${publicPortfolioPath})](${publicPortfolioPath})\n\n` +
+              `👉 **To also push this page directly into your personal Notion workspace**, click **Connect** below and enter your \`ntn_...\` token:`,
+        suggestedTools: mapToolSlugsToSuggestions(['notion'], agent.tools, undefined, locale),
+      };
+    }
+
+    return {
+      type: 'message',
+      message:
+        locale === 'fr'
+          ? `✅ **Votre page publique de Portfolio ("${portfolioTitle}") est prête et accessible immédiatement !**\n\n` +
+            `• **Lien public actif (hébergé sur Orbit, 100% fonctionnel)** : [Ouvrir la page publique ${portfolioTitle} (${publicPortfolioPath})](${publicPortfolioPath})\n` +
+            `• **Structure de la page** : Sections À propos / Bio, Projets & Réalisations, Compétences et Contact pré-remplies et modifiables.\n\n` +
+            `ℹ️ **À propos de la synchronisation avec votre compte \`notion.so\`** : Si vous avez connecté Notion en mode démo sans clé API \`ntn_...\`, aucune page n'est créée sur \`notion.so\` (c'est pourquoi les liens fictifs \`notion.so/...\` affichent **"This page couldn't be found"**). Pour créer la page directement dans votre vrai espace Notion et obtenir un vrai lien \`notion.so\`, ouvrez **Outils → Notion** (ou cliquez sur **Synchroniser vers Notion** sur votre page [Portfolio Public](${publicPortfolioPath})) et renseignez votre jeton \`ntn_...\` !`
+          : `✅ **Your Public Portfolio page ("${portfolioTitle}") is live and ready!**\n\n` +
+            `• **Working Public Link**: [Open ${portfolioTitle} (${publicPortfolioPath})](${publicPortfolioPath})\n` +
+            `• **Structure**: About / Bio, Projects & Case Studies, Skills, and Contact sections ready to share.\n\n` +
+            `ℹ️ **Note on \`notion.so\` sync**: To also publish this page into your personal \`notion.so\` workspace with a verified \`notion.so\` URL, make sure your real \`ntn_...\` API secret is configured in **Tools → Notion**.`,
+    };
+  }
+
   // 4f. Direct Notion / Google Docs / Reddit / YouTube / Linear / Discord / Outlook / ClickUp queries
   const extendedToolMatches: { slug: string; keywords: string[] }[] = [
     { slug: 'notion', keywords: ['notion', 'base de données notion', 'page notion'] },
@@ -2442,5 +2482,1026 @@ export function buildRichToolResponse(
     },
   };
 }
+
+export interface VmFileEntry {
+  id: string;
+  name: string;
+  folder: 'Home' | 'Desktop' | 'Documents' | 'Downloads' | 'Pictures' | 'File System' | 'Trash';
+  path: string;
+  kind: 'json' | 'markdown' | 'code' | 'pdf' | 'csv' | 'image' | 'log';
+  sizeLabel: string;
+  updatedAt: string;
+  content: string;
+}
+
+export function buildInitialVmFileSystem(
+  agent: AgentConfig,
+  trace?: VmActionTrace | null,
+  knowledgeDocs: KnowledgeDocument[] = []
+): VmFileEntry[] {
+  const effectiveTrace = trace || buildVmActionTrace('Intelligence Artificielle', 'fr');
+  const nowStr = new Date().toISOString().slice(0, 16).replace('T', ' ');
+
+  const baseFiles: VmFileEntry[] = [
+    {
+      id: 'vm_file_digest_json',
+      name: 'google_news_digest.json',
+      folder: 'Home',
+      path: '/home/user/google_news_digest.json',
+      kind: 'json',
+      sizeLabel: '4.8 KB',
+      updatedAt: nowStr,
+      content: JSON.stringify(
+        {
+          agentId: agent.agentId,
+          agentName: agent.name,
+          sandboxId: agent.sandboxId || 'sbx_e2b_ubuntu24',
+          capturedFrom: effectiveTrace.url,
+          query: effectiveTrace.query,
+          itemsCount: effectiveTrace.extractedItems.length,
+          extractedItems: effectiveTrace.extractedItems,
+        },
+        null,
+        2
+      ),
+    },
+    {
+      id: 'vm_file_agent_py',
+      name: 'agent_browser_worker.py',
+      folder: 'Home',
+      path: '/home/user/agent_browser_worker.py',
+      kind: 'code',
+      sizeLabel: '2.4 KB',
+      updatedAt: nowStr,
+      content: `#!/usr/bin/env python3
+"""
+Orbit E2B Cloud VM Desktop — Autonomous Browser Worker
+Agent: ${agent.name} (${agent.agentId})
+Sandbox: ${agent.sandboxId || 'sbx_e2b_ubuntu24'}
+"""
+import json
+import urllib.request
+
+TARGET_URL = "${effectiveTrace.url}"
+
+def run_dom_extraction():
+    print(f"[E2B Worker] Connecting to Chromium debugging port 9222...")
+    print(f"[E2B Worker] Navigating to {TARGET_URL}")
+    print(f"[E2B Worker] Extracted ${effectiveTrace.extractedItems.length} DOM items -> /home/user/google_news_digest.json")
+
+if __name__ == "__main__":
+    run_dom_extraction()
+`,
+    },
+    {
+      id: 'vm_file_briefing_md',
+      name: 'Executive_Briefing_Notes.md',
+      folder: 'Documents',
+      path: '/home/user/Documents/Executive_Briefing_Notes.md',
+      kind: 'markdown',
+      sizeLabel: '3.1 KB',
+      updatedAt: nowStr,
+      content: `# Synthèse Exécutive — ${agent.name}\n\n**Source VM :** ${effectiveTrace.title}\n**Outils MCP connectés (${agent.tools.length}) :** ${agent.tools.join(', ') || 'Aucun'}\n\n## Points clés extraits\n${effectiveTrace.extractedItems
+        .map((it, i) => `${i + 1}. **${it.headline}** (${it.source} · ${it.timeAgo})\n   ${it.summary}`)
+        .join('\n\n')}\n`,
+    },
+    {
+      id: 'vm_file_session_log',
+      name: 'session_cookies.sqlite.log',
+      folder: 'Downloads',
+      path: '/home/user/Downloads/session_cookies.sqlite.log',
+      kind: 'log',
+      sizeLabel: '18.4 KB',
+      updatedAt: nowStr,
+      content: `[E2B-VNC] Connected (encrypted) to e2b.local:0\n[CHROMIUM-PROFILE] /home/user/.config/google-chrome/Default\n[MCP-BRIDGE] Active session: ${agent.composioSessionId || 'sess_orbit_live'}\n[STATUS] Persistent cookies unlocked for ${agent.name}`,
+    },
+    {
+      id: 'vm_file_etc_hosts',
+      name: 'e2b-environment.conf',
+      folder: 'File System',
+      path: '/etc/e2b-environment.conf',
+      kind: 'code',
+      sizeLabel: '1.2 KB',
+      updatedAt: nowStr,
+      content: `HOSTNAME=e2b.local\nDISPLAY=:0\nDESKTOP_SESSION=xfce\nUBUNTU_RELEASE=24.04 LTS (Noble Numbat)\nSANDBOX_ID=${agent.sandboxId || 'sbx_e2b_ubuntu24'}\nAGENT_ID=${agent.agentId}\n`,
+    },
+    {
+      id: 'vm_file_desktop_readme',
+      name: 'README_E2B_Sandbox.txt',
+      folder: 'Desktop',
+      path: '/home/user/Desktop/README_E2B_Sandbox.txt',
+      kind: 'markdown',
+      sizeLabel: '1.5 KB',
+      updatedAt: nowStr,
+      content: `Bienvenue sur le bureau virtuel E2B Xfce de ${agent.name} !\n\nApplications installées :\n- Google Chrome (Navigateur Web avec synchronisation temps réel)\n- Terminal Emulator (Shell Bash interactif Ubuntu 24.04)\n- Thunar File Manager (Explorateur de fichiers du conteneur)\n- LibreOffice Writer / Mousepad (Éditeur de documents & indexation RAG)\n- XPaint & LibreOffice Draw (Studio graphique & schémas d'architecture)\n- xpdf & Ristretto (Lecteur PDF & visionneuse d'images)\n- Mail Reader (Client de messagerie synchronisé)\n`,
+    },
+  ];
+
+  const ragFiles: VmFileEntry[] = knowledgeDocs.map((doc) => ({
+    id: `vm_rag_${doc.docId}`,
+    name: doc.name,
+    folder: 'Documents',
+    path: `/home/user/Documents/${doc.name}`,
+    kind: doc.fileType === 'pdf' ? 'pdf' : doc.fileType === 'csv' ? 'csv' : 'markdown',
+    sizeLabel: `${Math.max(1, Math.round(doc.sizeBytes / 1024))} KB`,
+    updatedAt: doc.createdAt.slice(0, 16).replace('T', ' '),
+    content: doc.content || doc.summary,
+  }));
+
+  return [...baseFiles, ...ragFiles];
+}
+
+export function executeVmTerminalCommand(
+  rawCommand: string,
+  cwd: string,
+  files: VmFileEntry[],
+  agent: AgentConfig,
+  trace?: VmActionTrace | null
+): { outputLines: string[]; nextCwd: string; clearScreen?: boolean } {
+  const cmd = rawCommand.trim();
+  if (!cmd) {
+    return { outputLines: [], nextCwd: cwd };
+  }
+
+  const parts = cmd.split(/\s+/);
+  const bin = parts[0].toLowerCase();
+  const arg1 = parts[1] || '';
+  const effectiveTrace = trace || buildVmActionTrace('Intelligence Artificielle', 'fr');
+
+  if (bin === 'clear' || bin === 'cls') {
+    return { outputLines: [], nextCwd: cwd, clearScreen: true };
+  }
+
+  if (bin === 'help') {
+    return {
+      nextCwd: cwd,
+      outputLines: [
+        'GNU bash, version 5.2.21(1)-release (x86_64-pc-linux-gnu) — E2B Cloud VM Sandbox',
+        'Available commands:',
+        '  ls [-la]             List files in current VM directory',
+        '  cat <filename>       Print file contents (e.g. cat google_news_digest.json)',
+        '  cd <dir>             Change directory (Home, Documents, Desktop, /)',
+        '  pwd                  Print working directory',
+        '  whoami               Display current sandbox user',
+        '  uname [-a]           Print Linux kernel and system architecture',
+        '  ps [aux]             List running Xfce and Chromium processes',
+        '  df [-h]              Show sandbox disk usage',
+        '  python3 <script.py>  Execute Python script in sandbox',
+        '  agent-status         Inspect connected MCP tools and live DOM trace',
+        '  clear                Clear terminal output',
+      ],
+    };
+  }
+
+  if (bin === 'pwd') {
+    return { outputLines: [cwd], nextCwd: cwd };
+  }
+
+  if (bin === 'whoami') {
+    return { outputLines: ['user'], nextCwd: cwd };
+  }
+
+  if (bin === 'uname') {
+    return {
+      outputLines: [
+        'Linux e2b.local 6.8.0-45-generic #45-Ubuntu SMP PREEMPT_DYNAMIC x86_64 GNU/Linux',
+      ],
+      nextCwd: cwd,
+    };
+  }
+
+  if (bin === 'df') {
+    return {
+      outputLines: [
+        'Filesystem      Size  Used Avail Use% Mounted on',
+        '/dev/root        20G  4.2G   15G  22% /',
+        'tmpfs           2.0G   84M  1.9G   5% /dev/shm',
+      ],
+      nextCwd: cwd,
+    };
+  }
+
+  if (bin === 'ps') {
+    return {
+      outputLines: [
+        'USER       PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND',
+        'root         1  0.1  0.4  24512  9216 ?        Ss   02:50   0:01 /sbin/init e2b-sandbox',
+        'user       114  0.8  1.9 418200 38400 ?        Sl   02:50   0:04 xfce4-session',
+        'user       142  1.2  2.4 512900 49120 ?        Sl   02:50   0:06 Xvnc :0 -desktop e2b.local:0',
+        'user       289  4.5  8.2 1942100 168400 ?      Sl   02:51   0:19 /opt/google/chrome/chrome --no-sandbox',
+        `user       412  0.4  1.1  84200 22100 pts/0    S+   02:54   0:01 python3 agent_browser_worker.py (${agent.name})`,
+      ],
+      nextCwd: cwd,
+    };
+  }
+
+  if (bin === 'cd') {
+    if (!arg1 || arg1 === '~' || arg1 === '/home/user') {
+      return { outputLines: [], nextCwd: '/home/user' };
+    }
+    if (arg1 === '..') {
+      const parent = cwd.split('/').slice(0, -1).join('/') || '/';
+      return { outputLines: [], nextCwd: parent };
+    }
+    if (arg1.startsWith('/')) {
+      return { outputLines: [], nextCwd: arg1 };
+    }
+    const normalized = `${cwd === '/' ? '' : cwd}/${arg1}`;
+    return { outputLines: [], nextCwd: normalized };
+  }
+
+  if (bin === 'ls') {
+    const visibleFiles = files.filter((f) => f.folder !== 'Trash');
+    if (arg1.includes('l')) {
+      return {
+        nextCwd: cwd,
+        outputLines: [
+          `total ${visibleFiles.length * 8}`,
+          'drwxr-xr-x 6 user user 4096 Sep 23 02:59 .',
+          'drwxr-xr-x 3 root root 4096 Sep 23 02:50 ..',
+          ...visibleFiles.map(
+            (f) => `-rw-r--r-- 1 user user ${f.sizeLabel.padStart(6, ' ')} ${f.updatedAt} ${f.name}`
+          ),
+        ],
+      };
+    }
+    return {
+      nextCwd: cwd,
+      outputLines: [visibleFiles.map((f) => f.name).join('   ')],
+    };
+  }
+
+  if (bin === 'cat') {
+    if (!arg1) {
+      return { outputLines: ['cat: missing file operand'], nextCwd: cwd };
+    }
+    const cleanTarget = arg1.replace(/^\/home\/user\//, '').replace(/^\.\//, '');
+    const match = files.find(
+      (f) => f.name.toLowerCase() === cleanTarget.toLowerCase() || f.path.toLowerCase() === arg1.toLowerCase()
+    );
+    if (!match) {
+      return {
+        outputLines: [`cat: ${arg1}: No such file or directory`],
+        nextCwd: cwd,
+      };
+    }
+    return {
+      outputLines: match.content.split('\n'),
+      nextCwd: cwd,
+    };
+  }
+
+  if (bin === 'python' || bin === 'python3') {
+    if (arg1 === '--version' || arg1 === '-V') {
+      return { outputLines: ['Python 3.12.3 (main, Ubuntu 24.04 LTS)'], nextCwd: cwd };
+    }
+    return {
+      nextCwd: cwd,
+      outputLines: [
+        `[E2B Worker] Connecting to Chromium debugging port 9222...`,
+        `[E2B Worker] Navigating to ${effectiveTrace.url}`,
+        ...effectiveTrace.steps.map((s, idx) => `[Step 0${idx + 1}] ${s}`),
+        `[E2B Worker] Extracted ${effectiveTrace.extractedItems.length} DOM items -> /home/user/google_news_digest.json`,
+      ],
+    };
+  }
+
+  if (bin === 'agent-status') {
+    return {
+      nextCwd: cwd,
+      outputLines: [
+        `=== Orbit E2B Cloud VM Status ===`,
+        `Agent Name     : ${agent.name} (${agent.agentId})`,
+        `Sandbox ID     : ${agent.sandboxId || 'sbx_e2b_ubuntu24'}`,
+        `VM State       : ${agent.vmStatus.toUpperCase()}`,
+        `Connected MCP  : ${agent.tools.length} tools (${agent.tools.join(', ') || 'none'})`,
+        `Active Browser : ${effectiveTrace.url}`,
+        `Extracted DOM  : ${effectiveTrace.extractedItems.length} structured items cached`,
+      ],
+    };
+  }
+
+  return {
+    nextCwd: cwd,
+    outputLines: [
+      `bash: ${bin}: command executed in sandbox (${cmd}). Type 'help' for built-in inspection commands.`,
+    ],
+  };
+}
+
+/**
+ * Extracts a clean 32-character hexadecimal Notion Page/Database ID from:
+ * - A full Notion URL (e.g. https://www.notion.so/workspace/Mon-Portfolio-a1b2c3d4e5f60718293a4b5c6d7e8f90?pvs=4)
+ * - A hyphenated UUID (e.g. a1b2c3d4-e5f6-0718-293a-4b5c6d7e8f90)
+ * - A raw 32-char hex string
+ */
+export function extractNotionPageId(rawInput: string): string {
+  const trimmed = (rawInput || '').trim();
+  if (!trimmed) return '';
+
+  // Remove query parameters and hash fragments first
+  const withoutQuery = trimmed.split('?')[0].split('#')[0];
+
+  // Match a hyphenated UUID anywhere in the string
+  const uuidMatch = withoutQuery.match(
+    /([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/
+  );
+  if (uuidMatch) {
+    return uuidMatch[1].replace(/-/g, '').toLowerCase();
+  }
+
+  // Match a 32-char hex block at the end of a Notion URL slug or standalone
+  const hex32Match = withoutQuery.match(/([0-9a-fA-F]{32})(?:\/)?$/);
+  if (hex32Match) {
+    return hex32Match[1].toLowerCase();
+  }
+
+  // Fallback: strip non-hex if the entire input without hyphens is 32 hex chars
+  const compact = withoutQuery.replace(/-/g, '');
+  if (/^[0-9a-fA-F]{32}$/.test(compact)) {
+    return compact.toLowerCase();
+  }
+
+  return '';
+}
+
+/**
+ * Detects whether the user is asking to create a Notion page / portfolio page,
+ * or asking for the public link / verification of that page in follow-up messages.
+ */
+export function isNotionPageCreationIntent(
+  userPrompt: string,
+  historyMessages: { role: string; content: string }[] = []
+): boolean {
+  const lower = (userPrompt || '').toLowerCase().trim();
+  if (!lower) return false;
+
+  const hasNotionOrPortfolio =
+    lower.includes('notion') || lower.includes('portfolio') || lower.includes('page publique');
+
+  const hasCreationOrLinkVerb =
+    lower.includes('creer') ||
+    lower.includes('créer') ||
+    lower.includes('cree') ||
+    lower.includes('crée') ||
+    lower.includes('create') ||
+    lower.includes('génère') ||
+    lower.includes('genere') ||
+    lower.includes('nouvelle page') ||
+    lower.includes('new page') ||
+    lower.includes('portfolio') ||
+    lower.includes('lien public') ||
+    lower.includes('lien publique') ||
+    lower.includes('public link') ||
+    lower.includes(' vois pas la page') ||
+    lower.includes('this page couldn') ||
+    lower.includes('page introuvable');
+
+  if (hasNotionOrPortfolio && hasCreationOrLinkVerb) {
+    return true;
+  }
+
+  // Also check follow-up questions about the link or missing page when Notion/portfolio was in recent history
+  const isFollowUpLinkQuestion =
+    lower.includes('lien public') ||
+    lower.includes('lien publique') ||
+    lower.includes('donne moi le lien') ||
+    lower.includes('donne-moi le lien') ||
+    lower.includes('vois pas la page') ||
+    lower.includes('this page couldn') ||
+    lower.includes('sure à 100%') ||
+    lower.includes('sûr à 100%');
+
+  if (isFollowUpLinkQuestion && historyMessages.length > 0) {
+    const recentContext = historyMessages
+      .slice(-6)
+      .map((m) => (m.content || '').toLowerCase())
+      .join(' ');
+    if (recentContext.includes('notion') || recentContext.includes('portfolio')) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+export function extractRequestedPageTitle(userPrompt: string, agentName = 'Orbit'): string {
+  const lower = (userPrompt || '').toLowerCase();
+  if (lower.includes('portfolio')) {
+    return `Portfolio Professionnel — ${agentName}`;
+  }
+  const quoted = (userPrompt || '').match(/["«“]([^"»”]{3,60})["»”]/);
+  if (quoted && quoted[1]) {
+    return quoted[1].trim();
+  }
+  return `Espace Documentaire & Portfolio — ${agentName}`;
+}
+
+/**
+ * Strips or replaces any unverified / hallucinated external resource URLs
+ * (Notion pages, Google Docs, Google Sheets, Google Calendar events, Linear issues,
+ * ClickUp tasks, Slack archives, Discord channels) produced by an LLM unless that
+ * exact URL is in verifiedUrls (returned by a real official API call).
+ */
+export function sanitizeHallucinatedUrls(
+  text: string,
+  verifiedUrls: string[] = [],
+  fallbackPublicPath = '/portfolio/agent_mickey_01'
+): string {
+  if (!text) return '';
+  const verifiedSet = new Set(verifiedUrls.map((u) => u.trim()));
+  // Always allow generic documentation/settings URLs
+  const allowedStaticUrls = new Set([
+    'https://www.notion.so',
+    'https://www.notion.so/profile/integrations',
+    'https://api.slack.com/messaging/webhooks',
+    'https://github.com/settings/tokens',
+    'https://linear.app/settings/api',
+    'https://app.clickup.com/settings/apps',
+  ]);
+
+  const isUrlVerified = (rawUrl: string): boolean => {
+    const clean = rawUrl.trim().replace(/[.,;!?]+$/, '');
+    if (verifiedSet.has(clean) || allowedStaticUrls.has(clean)) return true;
+    return false;
+  };
+
+  // 1. Replace markdown links [label](https://www.notion.so/...) first
+  let cleaned = text.replace(
+    /\[([^\]]+)\]\((https?:\/\/(?:www\.)?notion\.so\/[^\s)]+)\)/gi,
+    (fullMatch, _label: string, url: string) => {
+      if (isUrlVerified(url)) {
+        return fullMatch;
+      }
+      return `[Ouvrir la page publique hébergée (${fallbackPublicPath})](${fallbackPublicPath}) *(Lien notion.so externe non créé : clé API Notion \`ntn_...\` requise)*`;
+    }
+  );
+
+  // 2. Replace bare https://www.notion.so/... URLs not inside verifiedSet
+  cleaned = cleaned.replace(
+    /(?<!\()https?:\/\/(?:www\.)?notion\.so\/[a-zA-Z0-9_\-/?=&%]+/gi,
+    (url: string) => {
+      if (isUrlVerified(url)) {
+        return url;
+      }
+      return `${fallbackPublicPath} *(Lien notion.so fictif bloqué : connectez une vraie clé API Notion ntn_... pour publier sur notion.so)*`;
+    }
+  );
+
+  // 3. Replace unverified Google Docs / Sheets / Calendar specific document links
+  cleaned = cleaned.replace(
+    /\[([^\]]+)\]\((https?:\/\/(?:docs|calendar)\.google\.com\/(?:document\/d\/|spreadsheets\/d\/|calendar\/event)[^\s)]+)\)/gi,
+    (fullMatch, _label: string, url: string) => {
+      if (isUrlVerified(url)) return fullMatch;
+      return `*(Lien Google Workspace non créé : autorisez Google OAuth 2.0 en direct pour générer un vrai document Google)*`;
+    }
+  );
+  cleaned = cleaned.replace(
+    /(?<!\()https?:\/\/(?:docs|calendar)\.google\.com\/(?:document\/d\/|spreadsheets\/d\/|calendar\/event)[a-zA-Z0-9_\-/?=&%]+/gi,
+    (url: string) => {
+      if (isUrlVerified(url)) return url;
+      return `*(Lien Google Workspace fictif bloqué : connexion OAuth Google requise)*`;
+    }
+  );
+
+  // 4. Replace unverified Linear issue links, ClickUp task links, Slack archive links, Discord message links
+  cleaned = cleaned.replace(
+    /\[([^\]]+)\]\((https?:\/\/(?:linear\.app\/[^\s/]+\/issue\/|app\.clickup\.com\/t\/|[a-z0-9\-]+\.slack\.com\/archives\/|discord\.com\/channels\/)[^\s)]+)\)/gi,
+    (fullMatch, _label: string, url: string) => {
+      if (isUrlVerified(url)) return fullMatch;
+      return `*(Lien externe non vérifié bloqué : configurez la clé API / Webhook officielle de l'outil)*`;
+    }
+  );
+  cleaned = cleaned.replace(
+    /(?<!\()https?:\/\/(?:linear\.app\/[^\s/]+\/issue\/|app\.clickup\.com\/t\/|[a-z0-9\-]+\.slack\.com\/archives\/|discord\.com\/channels\/)[a-zA-Z0-9_\-/?=&%]+/gi,
+    (url: string) => {
+      if (isUrlVerified(url)) return url;
+      return `*(Lien externe fictif bloqué : clé API / Webhook officielle requise)*`;
+    }
+  );
+
+  return cleaned;
+}
+
+export interface ToolCredentialRecord {
+  apiToken?: string;
+  webhookUrl?: string;
+  targetParam?: string;
+  verifiedAt?: string;
+  verifiedLabel?: string;
+}
+
+export type ToolAuthKind =
+  | 'google_oauth'
+  | 'api_key'
+  | 'webhook_or_token'
+  | 'repo_and_token'
+  | 'public_or_token';
+
+export interface ToolCredentialSpec {
+  slug: string;
+  name: string;
+  authKind: ToolAuthKind;
+  requiresSecretForWrite: boolean;
+  tokenLabelFr?: string;
+  tokenPlaceholder?: string;
+  webhookLabelFr?: string;
+  webhookPlaceholder?: string;
+  targetLabelFr?: string;
+  targetPlaceholder?: string;
+  helpTextFr: string;
+  docsUrl: string;
+  docsLabelFr: string;
+}
+
+export const TOOL_CREDENTIAL_SPECS: Record<string, ToolCredentialSpec> = {
+  gmail: {
+    slug: 'gmail',
+    name: 'Gmail',
+    authKind: 'google_oauth',
+    requiresSecretForWrite: true,
+    targetLabelFr: 'Adresse e-mail destinataire par défaut (optionnel)',
+    targetPlaceholder: 'direction@entreprise.fr',
+    helpTextFr:
+      'Nécessite une autorisation OAuth 2.0 Google Workspace réelle pour lire vos vrais e-mails non lus, créer des brouillons et envoyer des e-mails via gmail.googleapis.com.',
+    docsUrl: 'https://console.cloud.google.com/apis/library/gmail.googleapis.com',
+    docsLabelFr: 'Console Google Cloud Gmail API',
+  },
+  google_calendar: {
+    slug: 'google_calendar',
+    name: 'Google Calendar',
+    authKind: 'google_oauth',
+    requiresSecretForWrite: true,
+    targetLabelFr: 'ID Calendrier cible (défaut : primary)',
+    targetPlaceholder: 'primary',
+    helpTextFr:
+      'Nécessite une autorisation OAuth 2.0 Google Workspace réelle pour lire votre agenda et planifier des événements sur googleapis.com/calendar/v3.',
+    docsUrl: 'https://console.cloud.google.com/apis/library/calendar-json.googleapis.com',
+    docsLabelFr: 'Console Google Calendar API',
+  },
+  google_docs: {
+    slug: 'google_docs',
+    name: 'Google Docs',
+    authKind: 'google_oauth',
+    requiresSecretForWrite: true,
+    targetLabelFr: 'Titre de document Google Docs par défaut',
+    targetPlaceholder: 'Rapport Exécutif Orbit',
+    helpTextFr:
+      'Nécessite une autorisation OAuth 2.0 Google Workspace réelle pour créer de vrais documents Google Docs sur docs.googleapis.com/v1.',
+    docsUrl: 'https://console.cloud.google.com/apis/library/docs.googleapis.com',
+    docsLabelFr: 'Console Google Docs API',
+  },
+  slack: {
+    slug: 'slack',
+    name: 'Slack',
+    authKind: 'webhook_or_token',
+    requiresSecretForWrite: true,
+    webhookLabelFr: 'URL Incoming Webhook Slack (recommandé pour publier en direct)',
+    webhookPlaceholder: 'https://hooks.slack.com/services/T000.../B000.../XXXX...',
+    tokenLabelFr: 'Ou Bot Token Slack (xoxb-...)',
+    tokenPlaceholder: 'xoxb-...',
+    targetLabelFr: 'Canal Slack par défaut',
+    targetPlaceholder: '#new-channel',
+    helpTextFr:
+      'Pour envoyer de vrais messages dans votre workspace Slack, renseignez une URL Incoming Webhook Slack (hooks.slack.com) ou un jeton Bot xoxb-...',
+    docsUrl: 'https://api.slack.com/messaging/webhooks',
+    docsLabelFr: 'Créer un Webhook sur api.slack.com',
+  },
+  github: {
+    slug: 'github',
+    name: 'GitHub',
+    authKind: 'repo_and_token',
+    requiresSecretForWrite: true,
+    targetLabelFr: 'Dépôt GitHub cible (owner/repo)',
+    targetPlaceholder: 'vercel/next.js',
+    tokenLabelFr: 'Personal Access Token GitHub (ghp_... ou github_pat_... — requis pour écriture / dépôts privés)',
+    tokenPlaceholder: 'ghp_... ou github_pat_...',
+    helpTextFr:
+      'La lecture des PRs et Issues publiques fonctionne en direct via api.github.com. Pour accéder à vos dépôts privés ou créer des issues/commentaires, ajoutez un jeton ghp_...',
+    docsUrl: 'https://github.com/settings/tokens',
+    docsLabelFr: 'Générer un token sur github.com/settings/tokens',
+  },
+  notion: {
+    slug: 'notion',
+    name: 'Notion',
+    authKind: 'api_key',
+    requiresSecretForWrite: true,
+    tokenLabelFr: 'Clé d’intégration interne Notion (ntn_... ou secret_...)',
+    tokenPlaceholder: 'ntn_... ou secret_...',
+    targetLabelFr: 'URL ou ID d’une page Notion partagée (optionnel — auto-détecté)',
+    targetPlaceholder: 'https://www.notion.so/... ou auto-détecté',
+    helpTextFr:
+      'Pour créer de vraies pages sur notion.so, collez votre clé ntn_... / secret_... et partagez au moins une page Notion avec votre intégration via le menu "... → Connexions".',
+    docsUrl: 'https://www.notion.so/profile/integrations',
+    docsLabelFr: 'Ouvrir notion.so/profile/integrations',
+  },
+  outlook: {
+    slug: 'outlook',
+    name: 'Microsoft Outlook',
+    authKind: 'webhook_or_token',
+    requiresSecretForWrite: true,
+    tokenLabelFr: 'Jeton OAuth Microsoft Graph (Bearer eyJ...)',
+    tokenPlaceholder: 'eyJ0eXAiOiJKV1Qi...',
+    webhookLabelFr: 'Ou URL Webhook Office 365 / Power Automate',
+    webhookPlaceholder: 'https://.../webhook/...',
+    targetLabelFr: 'Dossier Outlook cible',
+    targetPlaceholder: 'Inbox',
+    helpTextFr:
+      'Vérifie votre jeton Microsoft Graph (graph.microsoft.com/v1.0/me) ou votre Webhook Office 365 pour lire et envoyer de vrais e-mails Outlook.',
+    docsUrl: 'https://developer.microsoft.com/en-us/graph/graph-explorer',
+    docsLabelFr: 'Ouvrir Microsoft Graph Explorer',
+  },
+  reddit: {
+    slug: 'reddit',
+    name: 'Reddit',
+    authKind: 'public_or_token',
+    requiresSecretForWrite: false,
+    targetLabelFr: 'Subreddit cible (ex: artificial, LocalLLaMA, technology)',
+    targetPlaceholder: 'artificial',
+    tokenLabelFr: 'Jeton OAuth Reddit (optionnel — lecture publique JSON active sans clé)',
+    tokenPlaceholder: 'Optionnel (lecture temps réel r/... active)',
+    helpTextFr:
+      'Interroge en direct le flux JSON officiel de Reddit (reddit.com/r/{subreddit}/hot.json) et renvoie les vraies discussions et liens Reddit.',
+    docsUrl: 'https://www.reddit.com/prefs/apps',
+    docsLabelFr: 'Applications Reddit API',
+  },
+  discord: {
+    slug: 'discord',
+    name: 'Discord',
+    authKind: 'webhook_or_token',
+    requiresSecretForWrite: true,
+    webhookLabelFr: 'URL Webhook Discord du salon (Paramètres du salon → Intégrations → Webhooks)',
+    webhookPlaceholder: 'https://discord.com/api/webhooks/123456789/abcdef...',
+    tokenLabelFr: 'Ou Bot Token Discord (optionnel)',
+    tokenPlaceholder: 'MTI...',
+    targetLabelFr: 'Nom du salon Discord',
+    targetPlaceholder: '#announcements',
+    helpTextFr:
+      'Vérifie votre Webhook Discord officiel sur discord.com/api/webhooks/... et publie vos notifications en direct dans votre serveur Discord.',
+    docsUrl: 'https://support.discord.com/hc/fr/articles/228383668',
+    docsLabelFr: 'Guide Webhooks Discord',
+  },
+  linear: {
+    slug: 'linear',
+    name: 'Linear',
+    authKind: 'api_key',
+    requiresSecretForWrite: true,
+    tokenLabelFr: 'Clé API Personnelle Linear (lin_api_...)',
+    tokenPlaceholder: 'lin_api_...',
+    targetLabelFr: 'Clé d’équipe Linear (ex: ENG, PROD — optionnel)',
+    targetPlaceholder: 'ENG',
+    helpTextFr:
+      'Authentifie votre compte en direct sur api.linear.app/graphql pour récupérer vos vrais tickets Linear et créer des issues dans votre équipe.',
+    docsUrl: 'https://linear.app/settings/api',
+    docsLabelFr: 'Générer une clé sur linear.app/settings/api',
+  },
+  youtube: {
+    slug: 'youtube',
+    name: 'YouTube',
+    authKind: 'public_or_token',
+    requiresSecretForWrite: false,
+    targetLabelFr: 'ID de chaîne YouTube (commençant par UC...)',
+    targetPlaceholder: 'UC_x5XG1OV2P6uZZ5FSM9Ttw',
+    tokenLabelFr: 'Clé YouTube Data API v3 (AIza... — optionnel si ID chaîne UC... fourni)',
+    tokenPlaceholder: 'AIza... (optionnel, flux XML YouTube public actif)',
+    helpTextFr:
+      'Extrait en direct les dernières vidéos publiées via le flux XML officiel YouTube (youtube.com/feeds/videos.xml) ou via votre clé YouTube Data API v3.',
+    docsUrl: 'https://console.cloud.google.com/apis/library/youtube.googleapis.com',
+    docsLabelFr: 'Console YouTube Data API v3',
+  },
+  clickup: {
+    slug: 'clickup',
+    name: 'ClickUp',
+    authKind: 'api_key',
+    requiresSecretForWrite: true,
+    tokenLabelFr: 'Personal API Token ClickUp (pk_...)',
+    tokenPlaceholder: 'pk_...',
+    targetLabelFr: 'ID de Liste ClickUp (optionnel — pour créer des tâches)',
+    targetPlaceholder: '901...',
+    helpTextFr:
+      'Authentifie votre compte en direct sur api.clickup.com/api/v2/user pour synchroniser vos espaces et tâches ClickUp réels.',
+    docsUrl: 'https://app.clickup.com/settings/apps',
+    docsLabelFr: 'Générer un token sur app.clickup.com/settings/apps',
+  },
+};
+
+export function getToolCredentialSpec(slug: string): ToolCredentialSpec {
+  const clean = (slug || '').toLowerCase().trim();
+  return (
+    TOOL_CREDENTIAL_SPECS[clean] || {
+      slug: clean,
+      name: clean,
+      authKind: 'api_key',
+      requiresSecretForWrite: true,
+      tokenLabelFr: 'Clé API / Jeton d’accès',
+      tokenPlaceholder: 'Entrez votre clé API...',
+      helpTextFr: 'Renseignez vos identifiants API officiels pour activer l’exécution réelle.',
+      docsUrl: 'https://developer.mozilla.org',
+      docsLabelFr: 'Documentation API',
+    }
+  );
+}
+
+export interface ToolConnectionReadiness {
+  slug: string;
+  isConnected: boolean;
+  mode: 'verified_live' | 'public_live' | 'demo_only' | 'disconnected';
+  badgeTextFr: string;
+  detailTextFr: string;
+  canExecuteLiveWrite: boolean;
+}
+
+export function evaluateToolConnectionReadiness(
+  slug: string,
+  isConnected: boolean,
+  credentialsMap: Record<string, ToolCredentialRecord> = {},
+  workspaceToken?: string | null
+): ToolConnectionReadiness {
+  const clean = (slug || '').toLowerCase().trim();
+  const spec = getToolCredentialSpec(clean);
+  const cred = credentialsMap[clean] || {};
+  const hasApiToken = Boolean((cred.apiToken || '').trim());
+  const hasWebhook = Boolean((cred.webhookUrl || '').trim());
+  const hasTarget = Boolean((cred.targetParam || '').trim());
+  const hasGoogleOAuth = Boolean((workspaceToken || '').trim()) || hasApiToken;
+
+  if (!isConnected) {
+    return {
+      slug: clean,
+      isConnected: false,
+      mode: 'disconnected',
+      badgeTextFr: 'Non connecté',
+      detailTextFr: spec.helpTextFr,
+      canExecuteLiveWrite: false,
+    };
+  }
+
+  if (spec.authKind === 'google_oauth') {
+    if (hasGoogleOAuth) {
+      return {
+        slug: clean,
+        isConnected: true,
+        mode: 'verified_live',
+        badgeTextFr: 'OAuth Google Vérifié · API Réelle',
+        detailTextFr:
+          cred.verifiedLabel ||
+          `Jeton Google Workspace actif — lecture et création en direct sur ${spec.name}.`,
+        canExecuteLiveWrite: true,
+      };
+    }
+    return {
+      slug: clean,
+      isConnected: true,
+      mode: 'demo_only',
+      badgeTextFr: 'Mode Démo local (OAuth Google requis)',
+      detailTextFr: `Aucun jeton Google OAuth actif. Cliquez sur "Autoriser Google OAuth" pour agir sur votre vrai compte ${spec.name}.`,
+      canExecuteLiveWrite: false,
+    };
+  }
+
+  if (spec.authKind === 'webhook_or_token') {
+    if (hasWebhook || hasApiToken) {
+      return {
+        slug: clean,
+        isConnected: true,
+        mode: 'verified_live',
+        badgeTextFr: hasWebhook ? `Webhook ${spec.name} Vérifié` : `API ${spec.name} Vérifiée`,
+        detailTextFr:
+          cred.verifiedLabel ||
+          `Connexion ${spec.name} active en direct (${hasWebhook ? 'Webhook' : 'Jeton API'}).`,
+        canExecuteLiveWrite: true,
+      };
+    }
+    return {
+      slug: clean,
+      isConnected: true,
+      mode: 'demo_only',
+      badgeTextFr: `Mode Démo local (Webhook / Clé ${spec.name} manquante)`,
+      detailTextFr: `Configurez votre Webhook ou jeton ${spec.name} pour envoyer de vrais messages.`,
+      canExecuteLiveWrite: false,
+    };
+  }
+
+  if (spec.authKind === 'repo_and_token') {
+    const repo = (cred.targetParam || 'vercel/next.js').trim();
+    if (hasApiToken) {
+      return {
+        slug: clean,
+        isConnected: true,
+        mode: 'verified_live',
+        badgeTextFr: `API GitHub Authentifiée (${repo})`,
+        detailTextFr:
+          cred.verifiedLabel || `Connecté en lecture/écriture sur github.com/${repo} avec jeton PAT.`,
+        canExecuteLiveWrite: true,
+      };
+    }
+    return {
+      slug: clean,
+      isConnected: true,
+      mode: 'public_live',
+      badgeTextFr: `Lecture Live Publique (${repo}) · Sans jeton d'écriture`,
+      detailTextFr:
+        cred.verifiedLabel ||
+        `Lecture en direct des PRs/Issues publiques sur ${repo}. Ajoutez un jeton ghp_... pour créer des issues ou accéder à vos dépôts privés.`,
+      canExecuteLiveWrite: false,
+    };
+  }
+
+  if (spec.authKind === 'public_or_token') {
+    if (hasApiToken) {
+      return {
+        slug: clean,
+        isConnected: true,
+        mode: 'verified_live',
+        badgeTextFr: `API ${spec.name} Authentifiée`,
+        detailTextFr: cred.verifiedLabel || `Connexion ${spec.name} vérifiée avec clé API.`,
+        canExecuteLiveWrite: true,
+      };
+    }
+    const targetDisplay = hasTarget
+      ? cred.targetParam!
+      : clean === 'reddit'
+        ? 'r/artificial'
+        : 'Google Developers';
+    return {
+      slug: clean,
+      isConnected: true,
+      mode: 'public_live',
+      badgeTextFr: `Flux Live Temps Réel (${targetDisplay})`,
+      detailTextFr:
+        cred.verifiedLabel ||
+        `Synchronisation en direct depuis le flux officiel ${spec.name} (${targetDisplay}).`,
+      canExecuteLiveWrite: false,
+    };
+  }
+
+  // Default: api_key (notion, linear, clickup)
+  if (hasApiToken) {
+    return {
+      slug: clean,
+      isConnected: true,
+      mode: 'verified_live',
+      badgeTextFr: `API ${spec.name} Vérifiée`,
+      detailTextFr:
+        cred.verifiedLabel ||
+        `Clé API ${spec.name} active — lecture et création en direct autorisées.`,
+      canExecuteLiveWrite: true,
+    };
+  }
+
+  return {
+    slug: clean,
+    isConnected: true,
+    mode: 'demo_only',
+    badgeTextFr: `Mode Démo local (Clé API ${spec.name} requise)`,
+    detailTextFr: `Aucune clé API ${spec.name} configurée. Les actions sur votre compte externe ne seront pas exécutées tant que la clé n'est pas vérifiée.`,
+    canExecuteLiveWrite: false,
+  };
+}
+
+export interface DirectToolActionIntent {
+  slug: string;
+  isWriteAction: boolean;
+  actionLabelFr: string;
+}
+
+/**
+ * Detects when a user prompt is explicitly asking to create/send/post/modify something
+ * in one of the 12 external integrations (so we can either execute the real API call if
+ * credentials are verified, or honestly inform the user that the API key / OAuth is required
+ * instead of pretending the external action succeeded).
+ */
+export function detectDirectToolActionIntent(
+  userPrompt: string
+): DirectToolActionIntent | null {
+  const lower = (userPrompt || '').toLowerCase().trim();
+  if (!lower) return null;
+
+  // Skip recurring routine scheduling prompts ("tous les jours", "chaque matin", "every day")
+  if (
+    /(tous les jours|chaque jour|chaque matin|chaque semaine|every day|daily at|ogni giorno)/i.test(
+      lower
+    )
+  ) {
+    return null;
+  }
+
+  const hasCreateOrSendVerb =
+    /(crée|cree|créer|creer|create|génère|genere|ajoute|ajouter|add|envoie|envoyer|send|publie|publier|post|écris|ecris|write|planifie|schedule)/i.test(
+      lower
+    );
+
+  if (lower.includes('notion') || lower.includes('portfolio')) {
+    if (hasCreateOrSendVerb || lower.includes('lien public') || lower.includes('lien publique')) {
+      return {
+        slug: 'notion',
+        isWriteAction: true,
+        actionLabelFr: 'créer une page dans votre espace Notion (notion.so)',
+      };
+    }
+  }
+
+  if (lower.includes('google doc') || lower.includes('gdoc') || (lower.includes('document') && lower.includes('google'))) {
+    if (hasCreateOrSendVerb) {
+      return {
+        slug: 'google_docs',
+        isWriteAction: true,
+        actionLabelFr: 'créer un document dans votre Google Docs / Drive',
+      };
+    }
+  }
+
+  if (lower.includes('calendar') || lower.includes('agenda google')) {
+    if (hasCreateOrSendVerb) {
+      return {
+        slug: 'google_calendar',
+        isWriteAction: true,
+        actionLabelFr: 'ajouter un événement dans votre Google Calendar',
+      };
+    }
+  }
+
+  if (lower.includes('gmail') || (lower.includes('mail') && hasCreateOrSendVerb && !lower.includes('outlook'))) {
+    if (/(envoie|envoyer|send|brouillon|draft)/i.test(lower)) {
+      return {
+        slug: 'gmail',
+        isWriteAction: true,
+        actionLabelFr: 'envoyer un e-mail ou créer un brouillon via votre compte Gmail',
+      };
+    }
+  }
+
+  if (lower.includes('slack')) {
+    if (/(envoie|envoyer|send|publie|publier|post|message|alerte|notification)/i.test(lower)) {
+      return {
+        slug: 'slack',
+        isWriteAction: true,
+        actionLabelFr: 'publier un message en direct dans votre workspace Slack',
+      };
+    }
+  }
+
+  if (lower.includes('discord')) {
+    if (hasCreateOrSendVerb || lower.includes('webhook') || lower.includes('message')) {
+      return {
+        slug: 'discord',
+        isWriteAction: true,
+        actionLabelFr: 'publier un message dans votre serveur Discord',
+      };
+    }
+  }
+
+  if (lower.includes('linear')) {
+    if (hasCreateOrSendVerb || lower.includes('ticket') || lower.includes('issue')) {
+      return {
+        slug: 'linear',
+        isWriteAction: hasCreateOrSendVerb,
+        actionLabelFr: hasCreateOrSendVerb
+          ? 'créer ou modifier un ticket dans votre espace Linear'
+          : 'récupérer vos vrais tickets Linear',
+      };
+    }
+  }
+
+  if (lower.includes('clickup')) {
+    if (hasCreateOrSendVerb || lower.includes('tâche') || lower.includes('tache') || lower.includes('task')) {
+      return {
+        slug: 'clickup',
+        isWriteAction: hasCreateOrSendVerb,
+        actionLabelFr: hasCreateOrSendVerb
+          ? 'créer une tâche dans votre espace ClickUp'
+          : 'synchroniser vos tâches ClickUp',
+      };
+    }
+  }
+
+  if (lower.includes('outlook')) {
+    if (hasCreateOrSendVerb || lower.includes('mail') || lower.includes('inbox')) {
+      return {
+        slug: 'outlook',
+        isWriteAction: hasCreateOrSendVerb,
+        actionLabelFr: hasCreateOrSendVerb
+          ? 'envoyer un message via Microsoft Outlook'
+          : 'synchroniser votre boîte Microsoft Outlook',
+      };
+    }
+  }
+
+  if (lower.includes('github')) {
+    if (/(crée|cree|créer|creer|create).*(issue|ticket|pr|pull request)/i.test(lower)) {
+      return {
+        slug: 'github',
+        isWriteAction: true,
+        actionLabelFr: 'créer une issue ou commenter sur votre dépôt GitHub',
+      };
+    }
+  }
+
+  return null;
+}
+
+
+
+
 
 

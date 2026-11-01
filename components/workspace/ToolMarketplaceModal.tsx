@@ -1,9 +1,26 @@
 'use client';
 
 import React, { useState } from 'react';
-import { X, Search, Check, Plus, Unplug, CheckCircle2, Webhook } from 'lucide-react';
+import {
+  X,
+  Search,
+  Check,
+  Plus,
+  Unplug,
+  CheckCircle2,
+  Webhook,
+  KeyRound,
+  ShieldCheck,
+  ShieldAlert,
+  Loader2,
+  ExternalLink,
+} from 'lucide-react';
 import { useOrbit } from '@/context/OrbitContext';
-import { isGoogleWorkspaceTool, TOOL_CATALOG } from '@/lib/orbit-logic';
+import {
+  evaluateToolConnectionReadiness,
+  getToolCredentialSpec,
+  TOOL_CATALOG,
+} from '@/lib/orbit-logic';
 import { ToolIcon } from './ToolIcon';
 
 const CATEGORIES = ['All', 'Communication', 'Productivity', 'Development', 'Social & News'] as const;
@@ -21,6 +38,8 @@ export function ToolMarketplaceModal() {
     connectGoogleWorkspaceOAuth,
     slackWebhookUrl,
     setSlackWebhookUrl,
+    toolCredentials,
+    setToolCredential,
     locale,
     t,
     addToast,
@@ -31,6 +50,14 @@ export function ToolMarketplaceModal() {
   const [activeCategory, setActiveCategory] = useState<string>('All');
   const [connectingSlug, setConnectingSlug] = useState<string | null>(null);
   const [webhookDraft, setWebhookDraft] = useState<string>(slackWebhookUrl);
+
+  // Unified real API / OAuth / Webhook configuration state for ANY of the 12 tools
+  const [activeConfigSlug, setActiveConfigSlug] = useState<string | null>(null);
+  const [configTokenDraft, setConfigTokenDraft] = useState<string>('');
+  const [configWebhookDraft, setConfigWebhookDraft] = useState<string>('');
+  const [configTargetDraft, setConfigTargetDraft] = useState<string>('');
+  const [verifyBusy, setVerifyBusy] = useState<boolean>(false);
+  const [verifyError, setVerifyError] = useState<string | null>(null);
 
   if (!isMarketplaceOpen) return null;
 
@@ -53,12 +80,99 @@ export function ToolMarketplaceModal() {
   const connectedToolsList = filteredTools.filter((tl) => connectedSlugs.has(tl.slug));
   const availableToolsList = filteredTools.filter((tl) => !connectedSlugs.has(tl.slug));
 
+  const openToolConfigDrawer = (slug: string) => {
+    const clean = slug.toLowerCase().trim();
+    const existing = toolCredentials[clean] || {};
+    setActiveConfigSlug(clean);
+    setConfigTokenDraft(existing.apiToken || '');
+    setConfigWebhookDraft(existing.webhookUrl || (clean === 'slack' ? slackWebhookUrl : ''));
+    setConfigTargetDraft(existing.targetParam || '');
+    setVerifyError(null);
+  };
+
   const handleConnect = async (slug: string) => {
     if (!targetAgent) return;
-    setConnectingSlug(slug);
+    const clean = slug.toLowerCase().trim();
+    const spec = getToolCredentialSpec(clean);
+    const readiness = evaluateToolConnectionReadiness(
+      clean,
+      true,
+      toolCredentials,
+      workspaceToken
+    );
+
+    // If this tool requires a secret/OAuth for write actions and is not verified yet, open the verification panel first!
+    if (spec.requiresSecretForWrite && !readiness.canExecuteLiveWrite) {
+      openToolConfigDrawer(clean);
+      return;
+    }
+
+    setConnectingSlug(clean);
     await new Promise((r) => setTimeout(r, 150));
-    await connectToolToAgent(targetAgent.agentId, slug);
+    await connectToolToAgent(targetAgent.agentId, clean);
     setConnectingSlug(null);
+  };
+
+  const handleVerifyToolInModal = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!targetAgent || !activeConfigSlug) return;
+    const slug = activeConfigSlug;
+    const spec = getToolCredentialSpec(slug);
+    setVerifyError(null);
+    setVerifyBusy(true);
+
+    try {
+      let currentGoogleToken = workspaceToken || '';
+      if (spec.authKind === 'google_oauth' && !currentGoogleToken && !configTokenDraft.trim()) {
+        const connectedToken = await connectGoogleWorkspaceOAuth();
+        if (connectedToken) {
+          currentGoogleToken = connectedToken;
+        }
+      }
+
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (currentGoogleToken) {
+        headers.Authorization = `Bearer ${currentGoogleToken}`;
+      }
+
+      const res = await fetch('/api/workspace', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          action: 'verify_tool',
+          toolSlug: slug,
+          apiToken: configTokenDraft.trim(),
+          webhookUrl: configWebhookDraft.trim(),
+          targetParam: configTargetDraft.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error || `Échec de vérification de l'API ${spec.name}`);
+      }
+
+      setToolCredential(slug, {
+        apiToken: configTokenDraft.trim(),
+        webhookUrl: configWebhookDraft.trim(),
+        targetParam: data.resolvedTargetParam ?? configTargetDraft.trim(),
+        verifiedAt: new Date().toISOString(),
+        verifiedLabel: data.verifiedLabel || `API ${spec.name} vérifiée`,
+      });
+
+      await connectToolToAgent(targetAgent.agentId, slug);
+      setActiveConfigSlug(null);
+      addToast({
+        title: `API ${spec.name} vérifiée et connectée`,
+        description: data.verifiedLabel || `Connexion officielle ${spec.name} active.`,
+        type: 'success',
+      });
+    } catch (err) {
+      setVerifyError(
+        err instanceof Error ? err.message : `Impossible de vérifier les identifiants ${spec.name}.`
+      );
+    } finally {
+      setVerifyBusy(false);
+    }
   };
 
   const handleConnectAll = async () => {
@@ -91,6 +205,8 @@ export function ToolMarketplaceModal() {
     });
   };
 
+  const activeSpec = activeConfigSlug ? getToolCredentialSpec(activeConfigSlug) : null;
+
   return (
     <div
       role="dialog"
@@ -121,7 +237,7 @@ export function ToolMarketplaceModal() {
                 <Check className="h-3.5 w-3.5" />
                 <span>
                   {locale === 'fr'
-                    ? `Tout connecter (${TOOL_CATALOG.length} outils)`
+                    ? `Tout activer (${TOOL_CATALOG.length} outils)`
                     : locale === 'it'
                       ? `Connetti tutti (${TOOL_CATALOG.length})`
                       : `Connect All (${TOOL_CATALOG.length})`}
@@ -243,6 +359,153 @@ export function ToolMarketplaceModal() {
           </form>
         </div>
 
+        {/* Universal Live API / OAuth / Webhook Configuration Panel for ANY selected tool */}
+        {activeSpec && (
+          <form
+            onSubmit={handleVerifyToolInModal}
+            className="px-6 py-4 border-b border-slate-200 bg-amber-50/75 space-y-3"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <KeyRound className="h-4 w-4 text-slate-900" />
+                <h3 className="text-xs font-bold text-slate-900">
+                  Configuration & Vérification API Officielle — {activeSpec.name}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveConfigSlug(null)}
+                className="text-xs font-medium text-slate-500 hover:text-slate-900"
+              >
+                Fermer
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-700 leading-relaxed">
+              {activeSpec.helpTextFr}{' '}
+              <a
+                href={activeSpec.docsUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 font-semibold text-blue-600 underline"
+              >
+                <span>{activeSpec.docsLabelFr}</span>
+                <ExternalLink className="h-3 w-3" />
+              </a>
+            </p>
+
+            {activeSpec.authKind === 'google_oauth' && (
+              <div className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white p-3">
+                <div className="text-xs text-slate-700">
+                  <span className="font-semibold text-slate-900">Option 1 (Recommandée) :</span>{' '}
+                  Autorisez la fenêtre OAuth 2.0 Google Workspace en 1 clic.
+                </div>
+                <button
+                  type="button"
+                  onClick={connectGoogleWorkspaceOAuth}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 shrink-0"
+                >
+                  <ShieldCheck className="h-3.5 w-3.5" />
+                  <span>Autoriser Google Workspace (OAuth)</span>
+                </button>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {activeSpec.webhookLabelFr && (
+                <div className="md:col-span-2">
+                  <label className="block text-[11px] font-semibold text-slate-800 mb-1">
+                    {activeSpec.webhookLabelFr}
+                  </label>
+                  <input
+                    type="url"
+                    value={configWebhookDraft}
+                    onChange={(e) => setConfigWebhookDraft(e.target.value)}
+                    placeholder={activeSpec.webhookPlaceholder}
+                    aria-label={activeSpec.webhookLabelFr}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-mono text-slate-900 focus:border-slate-900 focus:outline-none"
+                  />
+                </div>
+              )}
+
+              {(activeSpec.tokenLabelFr || activeSpec.authKind === 'google_oauth') && (
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-800 mb-1">
+                    {activeSpec.tokenLabelFr || 'Ou jeton OAuth Bearer Google (ya29...)'}
+                  </label>
+                  <input
+                    type="password"
+                    value={configTokenDraft}
+                    onChange={(e) => setConfigTokenDraft(e.target.value)}
+                    placeholder={activeSpec.tokenPlaceholder || 'ya29...'}
+                    aria-label={activeSpec.tokenLabelFr || 'Jeton API'}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-mono text-slate-900 focus:border-slate-900 focus:outline-none"
+                  />
+                </div>
+              )}
+
+              {activeSpec.targetLabelFr && (
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-800 mb-1">
+                    {activeSpec.targetLabelFr}
+                  </label>
+                  <input
+                    type="text"
+                    value={configTargetDraft}
+                    onChange={(e) => setConfigTargetDraft(e.target.value)}
+                    placeholder={activeSpec.targetPlaceholder}
+                    aria-label={activeSpec.targetLabelFr}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-900 focus:border-slate-900 focus:outline-none"
+                  />
+                </div>
+              )}
+            </div>
+
+            {verifyError && (
+              <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                {verifyError}
+              </div>
+            )}
+
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex items-center gap-2">
+                <button
+                  type="submit"
+                  disabled={verifyBusy}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
+                >
+                  {verifyBusy ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />
+                  )}
+                  <span>Vérifier & Connecter {activeSpec.name} (API Réelle)</span>
+                </button>
+                {activeSpec.slug === 'notion' && targetAgent && (
+                  <a
+                    href={`/portfolio/${encodeURIComponent(targetAgent.agentId)}`}
+                    className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100"
+                  >
+                    <span>Ouvrir le Portfolio Public Orbit</span>
+                    <ExternalLink className="h-3.5 w-3.5" />
+                  </a>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!targetAgent) return;
+                  await connectToolToAgent(targetAgent.agentId, activeSpec.slug);
+                  setActiveConfigSlug(null);
+                }}
+                className="text-[11px] font-medium text-slate-600 underline hover:text-slate-900"
+              >
+                Activer en Mode Démo local (sans clé API — n’agira pas sur mon vrai compte {activeSpec.name})
+              </button>
+            </div>
+          </form>
+        )}
+
         {/* Search & Category Bar */}
         <div className="px-6 py-3 border-b border-slate-200 bg-slate-50/60 flex flex-wrap items-center justify-between gap-3">
           <div className="relative flex-1 min-w-60">
@@ -296,39 +559,71 @@ export function ToolMarketplaceModal() {
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {connectedToolsList.map((tool) => (
-                  <div
-                    key={tool.slug}
-                    className="flex items-start justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50/60 p-3.5"
-                  >
-                    <div className="flex items-start gap-3 min-w-0">
-                      <div className="h-9 w-9 rounded-lg border border-slate-200 bg-white flex items-center justify-center shrink-0">
-                        <ToolIcon slug={tool.slug} className="h-4 w-4" />
-                      </div>
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <p className="text-xs font-semibold text-slate-900">{tool.name}</p>
-                          <span className="text-[11px] text-emerald-700 font-medium">
-                            · {t.marketplace.connectedStatus}
-                            {isGoogleWorkspaceTool(tool.slug) && workspaceToken ? ' (OAuth Live)' : ''}
-                          </span>
+                {connectedToolsList.map((tool) => {
+                  const readiness = evaluateToolConnectionReadiness(
+                    tool.slug,
+                    true,
+                    toolCredentials,
+                    workspaceToken
+                  );
+                  return (
+                    <div
+                      key={tool.slug}
+                      className="flex items-start justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50/60 p-3.5"
+                    >
+                      <div className="flex items-start gap-3 min-w-0">
+                        <div className="h-9 w-9 rounded-lg border border-slate-200 bg-white flex items-center justify-center shrink-0">
+                          <ToolIcon slug={tool.slug} className="h-4 w-4" />
                         </div>
-                        <p className="text-xs text-slate-600 mt-0.5 line-clamp-2">
-                          {tool.description}
-                        </p>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <p className="text-xs font-semibold text-slate-900">{tool.name}</p>
+                            {readiness.mode === 'verified_live' ? (
+                              <span className="inline-flex items-center gap-1 text-[11px] text-emerald-700 font-semibold">
+                                <ShieldCheck className="h-3 w-3" />
+                                <span>{readiness.badgeTextFr}</span>
+                              </span>
+                            ) : readiness.mode === 'public_live' ? (
+                              <span className="inline-flex items-center gap-1 text-[11px] text-blue-700 font-semibold">
+                                <ShieldCheck className="h-3 w-3" />
+                                <span>{readiness.badgeTextFr}</span>
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 text-[11px] text-amber-700 font-semibold">
+                                <ShieldAlert className="h-3 w-3" />
+                                <span>{readiness.badgeTextFr}</span>
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-xs text-slate-600 mt-0.5 line-clamp-2">
+                            {toolCredentials[tool.slug]?.verifiedLabel || tool.description}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => openToolConfigDrawer(tool.slug)}
+                          className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 transition-colors"
+                        >
+                          <KeyRound className="h-3.5 w-3.5" />
+                          <span>
+                            {readiness.mode === 'verified_live' ? 'Clé / OAuth' : 'Vérifier API'}
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          disabled={connectingSlug === tool.slug}
+                          onClick={() => handleDisconnect(tool.slug)}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-red-50 hover:text-red-700 hover:border-red-200 transition-colors whitespace-nowrap shrink-0"
+                        >
+                          <Unplug className="h-3.5 w-3.5" />
+                          <span>{t.marketplace.disconnectBtn}</span>
+                        </button>
                       </div>
                     </div>
-                    <button
-                      type="button"
-                      disabled={connectingSlug === tool.slug}
-                      onClick={() => handleDisconnect(tool.slug)}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-red-50 hover:text-red-700 hover:border-red-200 transition-colors whitespace-nowrap shrink-0"
-                    >
-                      <Unplug className="h-3.5 w-3.5" />
-                      <span>{t.marketplace.disconnectBtn}</span>
-                    </button>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -339,46 +634,59 @@ export function ToolMarketplaceModal() {
               {t.marketplace.availableTitle} ({availableToolsList.length})
             </h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {availableToolsList.map((tool) => (
-                <div
-                  key={tool.slug}
-                  className="flex items-start justify-between gap-3 rounded-lg border border-slate-200 bg-white p-3.5 hover:border-slate-300 transition-colors"
-                >
-                  <div className="flex items-start gap-3 min-w-0">
-                    <div className="h-9 w-9 rounded-lg border border-slate-200 bg-slate-50 flex items-center justify-center shrink-0">
-                      <ToolIcon slug={tool.slug} className="h-4 w-4" />
-                    </div>
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-1.5 text-xs">
-                        <span className="font-semibold text-slate-900">{tool.name}</span>
-                        <span className="text-slate-400">·</span>
-                        <span className="text-[11px] text-slate-500">{tool.category}</span>
-                      </div>
-                      <p className="text-xs text-slate-600 mt-0.5 line-clamp-2">
-                        {tool.description}
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    disabled={connectingSlug === tool.slug}
-                    onClick={() => handleConnect(tool.slug)}
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0"
+              {availableToolsList.map((tool) => {
+                const spec = getToolCredentialSpec(tool.slug);
+                const readiness = evaluateToolConnectionReadiness(
+                  tool.slug,
+                  true,
+                  toolCredentials,
+                  workspaceToken
+                );
+                return (
+                  <div
+                    key={tool.slug}
+                    className="flex items-start justify-between gap-3 rounded-lg border border-slate-200 bg-white p-3.5 hover:border-slate-300 transition-colors"
                   >
-                    {connectingSlug === tool.slug ? (
-                      <>
-                        <Check className="h-3.5 w-3.5" />
-                        <span>{t.marketplace.connectingBtn}</span>
-                      </>
-                    ) : (
-                      <>
-                        <Plus className="h-3.5 w-3.5" />
-                        <span>{t.marketplace.connectBtn}</span>
-                      </>
-                    )}
-                  </button>
-                </div>
-              ))}
+                    <div className="flex items-start gap-3 min-w-0">
+                      <div className="h-9 w-9 rounded-lg border border-slate-200 bg-slate-50 flex items-center justify-center shrink-0">
+                        <ToolIcon slug={tool.slug} className="h-4 w-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 text-xs flex-wrap">
+                          <span className="font-semibold text-slate-900">{tool.name}</span>
+                          <span className="text-slate-400">·</span>
+                          <span className="text-[11px] text-slate-500">{tool.category}</span>
+                        </div>
+                        <p className="text-xs text-slate-600 mt-0.5 line-clamp-2">
+                          {tool.description}
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={connectingSlug === tool.slug}
+                      onClick={() => handleConnect(tool.slug)}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0"
+                    >
+                      {connectingSlug === tool.slug ? (
+                        <>
+                          <Check className="h-3.5 w-3.5" />
+                          <span>{t.marketplace.connectingBtn}</span>
+                        </>
+                      ) : (
+                        <>
+                          <Plus className="h-3.5 w-3.5" />
+                          <span>
+                            {spec.requiresSecretForWrite && !readiness.canExecuteLiveWrite
+                              ? `Configurer ${tool.name}`
+                              : t.marketplace.connectBtn}
+                          </span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>

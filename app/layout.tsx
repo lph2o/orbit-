@@ -1,22 +1,9 @@
 import type { Metadata } from 'next';
-import { Figtree, JetBrains_Mono } from 'next/font/google';
 import './globals.css';
 import { OrbitProvider } from '@/context/OrbitContext';
 import { ToolMarketplaceModal } from '@/components/workspace/ToolMarketplaceModal';
 import { VmDesktopModal } from '@/components/workspace/VmDesktopModal';
 import { ToastViewport } from '@/components/workspace/ToastViewport';
-
-const figtree = Figtree({
-  subsets: ['latin'],
-  weight: ['400', '500', '600', '700'],
-  variable: '--font-figtree',
-});
-
-const jetbrainsMono = JetBrains_Mono({
-  subsets: ['latin'],
-  weight: ['400', '500', '600'],
-  variable: '--font-mono',
-});
 
 export const metadata: Metadata = {
   title: 'Orbit — AI Agent & Cloud VM Automation Platform',
@@ -38,10 +25,10 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${figtree.variable} ${jetbrainsMono.variable}`}>
+    <html lang="en">
       <body
         suppressHydrationWarning
-        className={`${figtree.className} bg-white text-slate-900 antialiased`}
+        className="bg-white font-sans text-slate-900 antialiased"
       >
         <OrbitProvider>
           {children}

@@ -13,7 +13,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { AgentStructuredResponse } from '@/lib/types';
-import { formatResponseForExport } from '@/lib/orbit-logic';
+import { formatResponseForExport, sanitizeHallucinatedUrls } from '@/lib/orbit-logic';
 import { useOrbit } from '@/context/OrbitContext';
 import { ToolSuggestionCard } from './ToolSuggestionCard';
 import { RoutineCard } from './RoutineCard';
@@ -21,10 +21,28 @@ import { RoutineCard } from './RoutineCard';
 function formatSimpleMarkdown(text: string) {
   const lines = (text || '').split('\n');
   return lines.map((line, i) => {
-    const parts = line.split(/(\*\*.*?\*\*|`.*?`)/g);
+    const parts = line.split(/(\[[^\]]+\]\([^)]+\)|\*\*.*?\*\*|`.*?`)/g);
     return (
       <p key={i} className={line.trim() === '' ? 'h-2' : 'leading-relaxed'}>
         {parts.map((part, j) => {
+          const linkMatch = part.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+          if (linkMatch) {
+            const label = linkMatch[1];
+            const href = linkMatch[2];
+            const isInternal = href.startsWith('/');
+            return (
+              <a
+                key={j}
+                href={href}
+                target={isInternal ? undefined : '_blank'}
+                rel={isInternal ? undefined : 'noreferrer'}
+                className="inline-flex items-center gap-1 font-semibold text-blue-600 underline decoration-blue-300 underline-offset-2 hover:text-blue-800"
+              >
+                <span>{label}</span>
+                <ExternalLink className="h-3 w-3 shrink-0" />
+              </a>
+            );
+          }
           if (part.startsWith('**') && part.endsWith('**')) {
             return (
               <strong key={j} className="font-semibold text-slate-900">
@@ -67,7 +85,12 @@ export function AgentResponseView({
   const [copilotApproved, setCopilotApproved] = useState(false);
 
   const agent = agents.find((a) => a.agentId === agentId);
-  const messageText = structured?.message || content;
+  const rawMessageText = structured?.message || content;
+  const messageText = sanitizeHallucinatedUrls(
+    rawMessageText,
+    [],
+    `/portfolio/${encodeURIComponent(agentId)}`
+  );
 
   const allSuggestedConnected =
     structured?.type === 'tool_connection' &&

@@ -59,6 +59,7 @@ import {
   sanitizeId,
   shouldAutoPauseVm,
   TOOL_CATALOG,
+  ToolCredentialRecord,
 } from '@/lib/orbit-logic';
 import { Dictionary, getDictionary, Locale } from '@/lib/i18n';
 import {
@@ -184,6 +185,8 @@ interface OrbitContextValue {
   setNotionToken: (token: string) => void;
   notionParentId: string;
   setNotionParentId: (id: string) => void;
+  toolCredentials: Record<string, ToolCredentialRecord>;
+  setToolCredential: (slug: string, record: ToolCredentialRecord) => void;
   addKnowledgeDocument: (agentId: string, docRecord: KnowledgeDocument) => void;
   deleteKnowledgeDocument: (agentId: string, docId: string) => void;
   runMultiAgentWorkflow: (
@@ -217,6 +220,7 @@ const STORAGE_KEYS = {
   GITHUB_TOKEN: 'orbit_github_token_v1',
   NOTION_TOKEN: 'orbit_notion_token_v1',
   NOTION_PARENT: 'orbit_notion_parent_v1',
+  TOOL_CREDENTIALS: 'orbit_tool_credentials_v1',
 };
 
 const GUEST_USER: UserProfile = {
@@ -257,6 +261,7 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
   const [githubToken, setGithubTokenState] = useState<string>('');
   const [notionToken, setNotionTokenState] = useState<string>('');
   const [notionParentId, setNotionParentIdState] = useState<string>('');
+  const [toolCredentials, setToolCredentialsState] = useState<Record<string, ToolCredentialRecord>>({});
   const [autoSchedulerEnabled, setAutoSchedulerEnabled] = useState<boolean>(true);
   const [lastSchedulerTick, setLastSchedulerTick] = useState<string>('');
   const [firestoreReady, setFirestoreReady] = useState<boolean>(false);
@@ -338,6 +343,16 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
   const setSlackWebhookUrl = useCallback((url: string) => {
     const clean = url.trim();
     setSlackWebhookUrlState(clean);
+    setToolCredentialsState((prev) => {
+      const next = {
+        ...prev,
+        slack: { ...(prev.slack || {}), webhookUrl: clean },
+      };
+      try {
+        localStorage.setItem(STORAGE_KEYS.TOOL_CREDENTIALS, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
     try {
       localStorage.setItem(STORAGE_KEYS.SLACK_WEBHOOK, clean);
     } catch {}
@@ -346,6 +361,16 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
   const setGithubRepo = useCallback((repo: string) => {
     const clean = (repo || 'vercel/next.js').trim();
     setGithubRepoState(clean);
+    setToolCredentialsState((prev) => {
+      const next = {
+        ...prev,
+        github: { ...(prev.github || {}), targetParam: clean },
+      };
+      try {
+        localStorage.setItem(STORAGE_KEYS.TOOL_CREDENTIALS, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
     try {
       localStorage.setItem(STORAGE_KEYS.GITHUB_REPO, clean);
     } catch {}
@@ -354,6 +379,16 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
   const setGithubToken = useCallback((token: string) => {
     const clean = token.trim();
     setGithubTokenState(clean);
+    setToolCredentialsState((prev) => {
+      const next = {
+        ...prev,
+        github: { ...(prev.github || {}), apiToken: clean },
+      };
+      try {
+        localStorage.setItem(STORAGE_KEYS.TOOL_CREDENTIALS, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
     try {
       localStorage.setItem(STORAGE_KEYS.GITHUB_TOKEN, clean);
     } catch {}
@@ -362,6 +397,16 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
   const setNotionToken = useCallback((token: string) => {
     const clean = token.trim();
     setNotionTokenState(clean);
+    setToolCredentialsState((prev) => {
+      const next = {
+        ...prev,
+        notion: { ...(prev.notion || {}), apiToken: clean },
+      };
+      try {
+        localStorage.setItem(STORAGE_KEYS.TOOL_CREDENTIALS, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
     try {
       localStorage.setItem(STORAGE_KEYS.NOTION_TOKEN, clean);
     } catch {}
@@ -370,9 +415,71 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
   const setNotionParentId = useCallback((id: string) => {
     const clean = id.trim();
     setNotionParentIdState(clean);
+    setToolCredentialsState((prev) => {
+      const next = {
+        ...prev,
+        notion: { ...(prev.notion || {}), targetParam: clean },
+      };
+      try {
+        localStorage.setItem(STORAGE_KEYS.TOOL_CREDENTIALS, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
     try {
       localStorage.setItem(STORAGE_KEYS.NOTION_PARENT, clean);
     } catch {}
+  }, []);
+
+  const setToolCredential = useCallback((slug: string, record: ToolCredentialRecord) => {
+    const cleanSlug = slug.toLowerCase().trim();
+    setToolCredentialsState((prev) => {
+      const next = {
+        ...prev,
+        [cleanSlug]: {
+          ...(prev[cleanSlug] || {}),
+          ...record,
+        },
+      };
+      try {
+        localStorage.setItem(STORAGE_KEYS.TOOL_CREDENTIALS, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+
+    if (cleanSlug === 'slack' && record.webhookUrl !== undefined) {
+      setSlackWebhookUrlState(record.webhookUrl.trim());
+      try {
+        localStorage.setItem(STORAGE_KEYS.SLACK_WEBHOOK, record.webhookUrl.trim());
+      } catch {}
+    }
+    if (cleanSlug === 'github') {
+      if (record.targetParam !== undefined) {
+        setGithubRepoState((record.targetParam || 'vercel/next.js').trim());
+        try {
+          localStorage.setItem(STORAGE_KEYS.GITHUB_REPO, (record.targetParam || 'vercel/next.js').trim());
+        } catch {}
+      }
+      if (record.apiToken !== undefined) {
+        setGithubTokenState(record.apiToken.trim());
+        try {
+          localStorage.setItem(STORAGE_KEYS.GITHUB_TOKEN, record.apiToken.trim());
+        } catch {}
+      }
+    }
+    if (cleanSlug === 'notion') {
+      if (record.apiToken !== undefined) {
+        setNotionTokenState(record.apiToken.trim());
+        try {
+          localStorage.setItem(STORAGE_KEYS.NOTION_TOKEN, record.apiToken.trim());
+        } catch {}
+      }
+      if (record.targetParam !== undefined) {
+        setNotionParentIdState(record.targetParam.trim());
+        try {
+          localStorage.setItem(STORAGE_KEYS.NOTION_PARENT, record.targetParam.trim());
+        } catch {}
+      }
+    }
   }, []);
 
   const addToast = useCallback((toast: Omit<ToastItem, 'id'>) => {
@@ -446,6 +553,32 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
       if (savedNotionToken) setNotionTokenState(savedNotionToken);
       const savedNotionParent = localStorage.getItem(STORAGE_KEYS.NOTION_PARENT);
       if (savedNotionParent) setNotionParentIdState(savedNotionParent);
+
+      const savedToolCreds = localStorage.getItem(STORAGE_KEYS.TOOL_CREDENTIALS);
+      let initialCreds: Record<string, ToolCredentialRecord> = {};
+      if (savedToolCreds) {
+        try {
+          initialCreds = JSON.parse(savedToolCreds) || {};
+        } catch {}
+      }
+      if (savedSlackWebhook) {
+        initialCreds.slack = { ...(initialCreds.slack || {}), webhookUrl: savedSlackWebhook };
+      }
+      if (savedGhRepo || savedGhToken) {
+        initialCreds.github = {
+          ...(initialCreds.github || {}),
+          targetParam: savedGhRepo || initialCreds.github?.targetParam || 'vercel/next.js',
+          apiToken: savedGhToken || initialCreds.github?.apiToken || '',
+        };
+      }
+      if (savedNotionToken || savedNotionParent) {
+        initialCreds.notion = {
+          ...(initialCreds.notion || {}),
+          apiToken: savedNotionToken || initialCreds.notion?.apiToken || '',
+          targetParam: savedNotionParent || initialCreds.notion?.targetParam || '',
+        };
+      }
+      setToolCredentialsState(initialCreds);
 
       const savedAgents = localStorage.getItem(STORAGE_KEYS.AGENTS);
       const savedRoutines = localStorage.getItem(STORAGE_KEYS.ROUTINES);
@@ -540,28 +673,58 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
 
   // Listen for Firebase Auth state and load user agents + subcollections from Firestore
   useEffect(() => {
+    let resolved = false;
+
+    const applyLocalOrAutostartFallback = () => {
+      if (resolved) return;
+      resolved = true;
+      try {
+        const params =
+          typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+        if (params?.get('autostart') === '1') {
+          const demoProfile: UserProfile = {
+            uid: 'user_demo_autostart',
+            name: 'Abdoulaye Thiam',
+            email: 'abdoulaye@orbit.ai',
+            avatarUrl: buildDiceBearAvatarUrl('abdoulaye-orbit'),
+            credits: 5,
+            isDemo: true,
+          };
+          localStorage.setItem(STORAGE_KEYS.AUTH_SESSION, JSON.stringify(demoProfile));
+          setUser(demoProfile);
+          setIsAuthenticated(true);
+          setAuthReady(true);
+          return;
+        }
+
+        const savedSession = localStorage.getItem(STORAGE_KEYS.AUTH_SESSION);
+        if (savedSession) {
+          const parsedUser: UserProfile = JSON.parse(savedSession);
+          if (parsedUser && parsedUser.email) {
+            setUser(parsedUser);
+            setIsAuthenticated(true);
+            setAuthReady(true);
+            return;
+          }
+        }
+      } catch {}
+
+      setUser(GUEST_USER);
+      setIsAuthenticated(false);
+      setAuthReady(true);
+    };
+
+    const fallbackTimer = setTimeout(applyLocalOrAutostartFallback, 500);
+
     const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
+      clearTimeout(fallbackTimer);
       if (!fbUser) {
         setCachedAccessToken(null);
         setWorkspaceToken(null);
-        try {
-          const savedSession = localStorage.getItem(STORAGE_KEYS.AUTH_SESSION);
-          if (savedSession) {
-            const parsedUser: UserProfile = JSON.parse(savedSession);
-            if (parsedUser && parsedUser.email) {
-              setUser(parsedUser);
-              setIsAuthenticated(true);
-              setAuthReady(true);
-              return;
-            }
-          }
-        } catch {}
-
-        setUser(GUEST_USER);
-        setIsAuthenticated(false);
-        setAuthReady(true);
+        applyLocalOrAutostartFallback();
         return;
       }
+      resolved = true;
 
       setWorkspaceToken(getAccessToken());
 
@@ -2047,6 +2210,8 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
       setNotionToken,
       notionParentId,
       setNotionParentId,
+      toolCredentials,
+      setToolCredential,
       autoSchedulerEnabled,
       setAutoSchedulerEnabled,
       lastSchedulerTick,
@@ -2108,6 +2273,8 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
       githubToken,
       notionToken,
       notionParentId,
+      toolCredentials,
+      setToolCredential,
       autoSchedulerEnabled,
       lastSchedulerTick,
       scheduleRoutineInSeconds,

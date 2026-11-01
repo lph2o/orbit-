@@ -5,13 +5,16 @@ import {
   analyzeUserPromptFallback,
   buildAgentStudioDirective,
   buildDiceBearAvatarUrl,
+  buildInitialVmFileSystem,
   buildRawMimeEmail,
   buildRichToolResponse,
   buildVmActionTrace,
   computeNextRunAt,
   computeWorkspaceAnalytics,
   createDefaultEventTriggers,
+  executeVmTerminalCommand,
   extractCleanVmSearchQuery,
+  extractNotionPageId,
   filterThreeDayHistory,
   formatReadableVmUrl,
   formatResponseForExport,
@@ -21,10 +24,12 @@ import {
   getRemainingVmSeconds,
   isContinuationInput,
   isGoogleWorkspaceTool,
+  isNotionPageCreationIntent,
   isRoutineDue,
   parseCsvDocumentContent,
   resolveMultiTurnPrompt,
   retrieveRelevantKnowledgeChunks,
+  sanitizeHallucinatedUrls,
   shouldAutoPauseVm,
   simulateRoutineExecutionSteps,
   TOOL_CATALOG,
@@ -431,6 +436,141 @@ test('All 12 tools in TOOL_CATALOG generate rich structured execution reports an
   assert.equal(redditChat.type, 'message');
   assert.match(redditChat.message, /upvotes/);
 });
+
+test('VM Desktop virtual filesystem and interactive terminal commands work accurately', () => {
+  const trace = buildVmActionTrace('Intelligence Artificielle', 'fr');
+  const ragDocs: KnowledgeDocument[] = [
+    {
+      docId: 'rag_99',
+      agentId: sampleAgent.agentId,
+      name: 'Politique_Securite.pdf',
+      fileType: 'pdf',
+      sizeBytes: 4096,
+      content: 'Chiffrement AES-256 requis sur tous les conteneurs E2B.',
+      summary: 'Chiffrement AES-256.',
+      createdAt: '2026-10-30T12:00:00.000Z',
+    },
+  ];
+
+  const vmFiles = buildInitialVmFileSystem(sampleAgent, trace, ragDocs);
+  assert.equal(vmFiles.some((f) => f.name === 'google_news_digest.json'), true);
+  assert.equal(vmFiles.some((f) => f.name === 'Politique_Securite.pdf' && f.folder === 'Documents'), true);
+
+  const lsRes = executeVmTerminalCommand('ls -la', '/home/user', vmFiles, sampleAgent, trace);
+  assert.equal(lsRes.outputLines.some((line) => line.includes('google_news_digest.json')), true);
+
+  const catRes = executeVmTerminalCommand('cat google_news_digest.json', '/home/user', vmFiles, sampleAgent, trace);
+  assert.equal(catRes.outputLines.some((line) => line.includes(sampleAgent.name)), true);
+
+  const statusRes = executeVmTerminalCommand('agent-status', '/home/user', vmFiles, sampleAgent, trace);
+  assert.equal(statusRes.outputLines.some((line) => line.includes('Mickey')), true);
+
+  const cdRes = executeVmTerminalCommand('cd Documents', '/home/user', vmFiles, sampleAgent, trace);
+  assert.equal(cdRes.nextCwd, '/home/user/Documents');
+});
+
+test('Notion page ID extractor, Notion portfolio intent, and anti-hallucination URL sanitizer prevent fake notion.so links', () => {
+  // 1. Extract 32-hex ID from Notion URLs, UUIDs, and raw strings
+  assert.equal(
+    extractNotionPageId('https://www.notion.so/myworkspace/Mon-Portfolio-a1b2c3d4e5f60718293a4b5c6d7e8f90?pvs=4'),
+    'a1b2c3d4e5f60718293a4b5c6d7e8f90'
+  );
+  assert.equal(
+    extractNotionPageId('a1b2c3d4-e5f6-0718-293a-4b5c6d7e8f90'),
+    'a1b2c3d4e5f60718293a4b5c6d7e8f90'
+  );
+  assert.equal(extractNotionPageId('invalid-short-id'), '');
+
+  // 2. Detect Notion portfolio creation and follow-up link questions
+  const p1 = 'creer une page dans mon notion, je veux que ca soit une page publique pour mon portfolio';
+  assert.equal(isNotionPageCreationIntent(p1), true);
+  assert.equal(
+    isNotionPageCreationIntent('je ne vois pas la page dans mon notion. donne moi le lien publique de la page alors', [
+      { role: 'user', content: p1 },
+    ]),
+    true
+  );
+
+  // 3. Sanitize hallucinated notion.so links while preserving verified API links
+  const hallucinatedText =
+    'Lien public : [https://www.notion.so/portfolio-professionnel-8x92k1l0m3n4p5](https://www.notion.so/portfolio-professionnel-8x92k1l0m3n4p5)';
+  const sanitized = sanitizeHallucinatedUrls(hallucinatedText, [], '/portfolio/agent_mickey_01');
+  assert.equal(sanitized.includes('portfolio-professionnel-8x92k1l0m3n4p5'), false);
+  assert.match(sanitized, /\/portfolio\/agent_mickey_01/);
+
+  const realNotionUrl = 'https://www.notion.so/Portfolio-Professionnel-a1b2c3d4e5f60718293a4b5c6d7e8f90';
+  const verifiedText = `Lien Notion vérifié : [${realNotionUrl}](${realNotionUrl})`;
+  assert.equal(
+    sanitizeHallucinatedUrls(verifiedText, [realNotionUrl], '/portfolio/agent_mickey_01').includes(realNotionUrl),
+    true
+  );
+
+  // 4. Fallback never claims an external notion.so URL was created without token, and always provides the working /portfolio/[agentId] URL
+  const resUnconnected = analyzeUserPromptFallback(p1, sampleAgent, 'Europe/Paris', null, 'fr');
+  assert.equal(resUnconnected.type, 'tool_connection');
+  assert.match(resUnconnected.message, /\/portfolio\/agent_mickey_01/);
+  assert.equal(resUnconnected.message.includes('notion.so/portfolio'), false);
+});
+
+test('All 12 integrations have credential specs, connection readiness evaluation, write-intent detection, and multi-platform anti-hallucination protection', async () => {
+  const {
+    TOOL_CREDENTIAL_SPECS,
+    evaluateToolConnectionReadiness,
+    detectDirectToolActionIntent,
+  } = await import('./orbit-logic');
+
+  // 1. Every tool in TOOL_CATALOG has a matching spec in TOOL_CREDENTIAL_SPECS
+  for (const tool of TOOL_CATALOG) {
+    const spec = TOOL_CREDENTIAL_SPECS[tool.slug];
+    assert.ok(spec, `Missing TOOL_CREDENTIAL_SPECS for ${tool.slug}`);
+    assert.equal(spec.slug, tool.slug);
+    assert.ok(spec.helpTextFr.length > 10);
+  }
+
+  // 2. Readiness distinguishes demo_only vs verified_live vs public_live
+  const linearDemo = evaluateToolConnectionReadiness('linear', true, {}, null);
+  assert.equal(linearDemo.mode, 'demo_only');
+  assert.equal(linearDemo.canExecuteLiveWrite, false);
+
+  const linearLive = evaluateToolConnectionReadiness(
+    'linear',
+    true,
+    { linear: { apiToken: 'lin_api_12345' } },
+    null
+  );
+  assert.equal(linearLive.mode, 'verified_live');
+  assert.equal(linearLive.canExecuteLiveWrite, true);
+
+  const gdocDemo = evaluateToolConnectionReadiness('google_docs', true, {}, null);
+  assert.equal(gdocDemo.mode, 'demo_only');
+  const gdocLive = evaluateToolConnectionReadiness('google_docs', true, {}, 'ya29.live_oauth_token');
+  assert.equal(gdocLive.mode, 'verified_live');
+
+  const redditPublic = evaluateToolConnectionReadiness('reddit', true, {}, null);
+  assert.equal(redditPublic.mode, 'public_live');
+
+  // 3. Multi-platform URL anti-hallucination blocks fake Google Docs, Linear, ClickUp, Slack, Discord URLs
+  const fakeMultiPlatform = [
+    'Doc : [Rapport](https://docs.google.com/document/d/1fakeDocId999/edit)',
+    'Ticket : https://linear.app/acme/issue/ENG-999/fake-issue',
+    'ClickUp : https://app.clickup.com/t/86fakeTask',
+    'Slack : https://acme.slack.com/archives/C12345/p999999',
+  ].join('\n');
+  const cleanedMulti = sanitizeHallucinatedUrls(fakeMultiPlatform, []);
+  assert.equal(cleanedMulti.includes('1fakeDocId999'), false);
+  assert.equal(cleanedMulti.includes('ENG-999/fake-issue'), false);
+  assert.equal(cleanedMulti.includes('86fakeTask'), false);
+  assert.equal(cleanedMulti.includes('C12345/p999999'), false);
+
+  // 4. Direct write action intent detector catches Slack, Discord, Google Docs, Linear, ClickUp
+  assert.equal(detectDirectToolActionIntent('Envoie un message sur Slack maintenant')?.slug, 'slack');
+  assert.equal(detectDirectToolActionIntent('Crée un document Google Docs pour le projet')?.slug, 'google_docs');
+  assert.equal(detectDirectToolActionIntent('Créer un ticket Linear pour ce bug')?.slug, 'linear');
+  assert.equal(detectDirectToolActionIntent('Ajoute une tâche ClickUp urgente')?.slug, 'clickup');
+  assert.equal(detectDirectToolActionIntent('Publie une annonce sur Discord')?.slug, 'discord');
+});
+
+
 
 
 

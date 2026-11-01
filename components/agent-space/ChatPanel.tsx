@@ -36,6 +36,10 @@ export function ChatPanel({
     setVmStatusForAgent,
     browseVmUrl,
     openVmModal,
+    notionToken,
+    notionParentId,
+    toolCredentials,
+    workspaceToken,
     locale,
     t,
   } = useOrbit();
@@ -85,9 +89,14 @@ export function ChatPanel({
         content: m.content,
       }));
 
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (workspaceToken) {
+        headers.Authorization = `Bearer ${workspaceToken}`;
+      }
+
       const res = await fetch('/api/agent/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           agent,
           messages: historyPayload,
@@ -95,6 +104,10 @@ export function ChatPanel({
           editingRoutine,
           locale,
           knowledgeDocs,
+          notionToken: notionToken || toolCredentials.notion?.apiToken || '',
+          notionParentId: notionParentId || toolCredentials.notion?.targetParam || '',
+          toolCredentials,
+          workspaceToken,
         }),
       });
 

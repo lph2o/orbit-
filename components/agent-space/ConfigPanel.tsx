@@ -53,6 +53,7 @@ import {
 import {
   buildDiceBearAvatarUrl,
   createDefaultEventTriggers,
+  evaluateToolConnectionReadiness,
   formatTimeDisplay,
   getRemainingVmSeconds,
   getToolBySlug,
@@ -113,6 +114,7 @@ export function ConfigPanel({
     setNotionToken,
     notionParentId,
     setNotionParentId,
+    toolCredentials,
     autoSchedulerEnabled,
     setAutoSchedulerEnabled,
     lastSchedulerTick,
@@ -541,28 +543,36 @@ export function ConfigPanel({
   const handleExecuteLiveTool = async (slug: string, postToChat = false) => {
     setExecutingToolSlug(slug);
     try {
+      const savedCred = toolCredentials[slug] || {};
       const targetParam =
         slug === 'github'
-          ? githubRepo
-          : toolCustomParams[slug] || '';
+          ? githubRepo || savedCred.targetParam
+          : toolCustomParams[slug] || savedCred.targetParam || '';
       const apiToken =
-        slug === 'github'
+        savedCred.apiToken ||
+        (slug === 'github'
           ? githubToken
           : slug === 'linear'
             ? linearTokenInput
             : slug === 'notion'
               ? notionToken
-              : undefined;
+              : undefined);
       const webhookUrl =
-        slug === 'discord'
+        savedCred.webhookUrl ||
+        (slug === 'discord'
           ? toolCustomParams.discord
           : slug === 'slack'
             ? slackWebhookInput
-            : undefined;
+            : undefined);
+
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (workspaceToken) {
+        headers.Authorization = `Bearer ${workspaceToken}`;
+      }
 
       const res = await fetch('/api/workspace', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           action: 'execute_tool',
           toolSlug: slug,
@@ -2291,6 +2301,12 @@ export function ConfigPanel({
                 {agent.tools.map((slug) => {
                   const info = getToolBySlug(slug);
                   const liveReport = toolLiveReports[slug];
+                  const readiness = evaluateToolConnectionReadiness(
+                    slug,
+                    true,
+                    toolCredentials,
+                    workspaceToken
+                  );
                   const hasCustomParamInput = [
                     'reddit',
                     'youtube',
@@ -2302,11 +2318,11 @@ export function ConfigPanel({
 
                   const paramPlaceholders: Record<string, string> = {
                     reddit: 'Subreddit cible (ex. r/artificial, r/LocalLLaMA)',
-                    youtube: 'Chaîne ou sujet YouTube (ex. AI Agents & MCP)',
-                    linear: 'Cycle ou Équipe Linear (ex. Cycle Sprint #24)',
-                    clickup: 'Espace ou Liste ClickUp (ex. Liste Sprint Q4)',
+                    youtube: 'Chaîne ou sujet YouTube (ex. UC_x5XG1OV2P6uZZ5FSM9Ttw)',
+                    linear: 'Cycle ou Équipe Linear (ex. ENG)',
+                    clickup: 'Espace ou Liste ClickUp (ex. 901...)',
                     discord: 'URL Webhook Discord (https://discord.com/api/webhooks/...)',
-                    outlook: 'Dossier ou boîte Microsoft Outlook (ex. Boîte Prioritaire)',
+                    outlook: 'Dossier ou boîte Microsoft Outlook (ex. Inbox)',
                   };
 
                   return (
@@ -2323,18 +2339,16 @@ export function ConfigPanel({
                             <p className="text-xs font-semibold text-slate-900 truncate">
                               {info?.name || slug.toUpperCase()}
                             </p>
-                            <p className="text-[11px] text-emerald-700 font-medium truncate">
-                              {isGoogleWorkspaceTool(slug) && workspaceToken
-                                ? 'Google Workspace OAuth Actif'
-                                : slug === 'slack' && slackWebhookUrl
-                                  ? 'Slack Webhook Actif'
-                                  : slug === 'github' && githubRepo
-                                    ? `GitHub API (${githubRepo})`
-                                    : slug === 'reddit'
-                                      ? `Reddit JSON Live (${toolCustomParams.reddit || 'r/artificial'})`
-                                      : liveReport
-                                        ? liveReport.statusLabel
-                                        : t.config.activeMcpAccess}
+                            <p
+                              className={`text-[11px] font-medium truncate ${
+                                readiness.mode === 'verified_live'
+                                  ? 'text-emerald-700'
+                                  : readiness.mode === 'public_live'
+                                    ? 'text-blue-700'
+                                    : 'text-amber-700'
+                              }`}
+                            >
+                              {liveReport ? liveReport.statusLabel : readiness.badgeTextFr}
                             </p>
                           </div>
                         </div>
