@@ -108,12 +108,14 @@ export default function PublicPortfolioPage() {
       const saved = window.localStorage.getItem(storageKey);
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (parsed.headline) setHeadline(parsed.headline);
-        if (parsed.bio) setBio(parsed.bio);
-        if (parsed.contactEmail) setContactEmail(parsed.contactEmail);
-        if (Array.isArray(parsed.projects) && parsed.projects.length > 0) {
-          setProjects(parsed.projects);
-        }
+        queueMicrotask(() => {
+          if (parsed.headline) setHeadline(parsed.headline);
+          if (parsed.bio) setBio(parsed.bio);
+          if (parsed.contactEmail) setContactEmail(parsed.contactEmail);
+          if (Array.isArray(parsed.projects) && parsed.projects.length > 0) {
+            setProjects(parsed.projects);
+          }
+        });
       }
     } catch {
       // ignore storage error

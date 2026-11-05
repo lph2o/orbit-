@@ -1,6 +1,10 @@
 import { buildRawMimeEmail, buildRichToolResponse, extractNotionPageId } from './orbit-logic';
 import { Locale } from './i18n';
-import { ToolExecutionResultItem, ToolLiveExecutionReport } from './types';
+import {
+  GmailCleanupCandidate,
+  ToolExecutionResultItem,
+  ToolLiveExecutionReport,
+} from './types';
 
 export interface LiveGmailMessage {
   id: string;
@@ -27,6 +31,214 @@ export interface LiveGitHubItem {
   url: string;
   createdAt: string;
   isPullRequest: boolean;
+}
+
+export function parseListUnsubscribeHeader(rawHeader: string): {
+  unsubscribeUrl?: string;
+  unsubscribeMailto?: string;
+} {
+  if (!rawHeader) return {};
+  const urlMatch = rawHeader.match(/<(https?:\/\/[^>]+)>/) || rawHeader.match(/(https?:\/\/[^\s,>]+)/);
+  const mailtoMatch = rawHeader.match(/<(mailto:[^>]+)>/) || rawHeader.match(/(mailto:[^\s,>]+)/);
+  return {
+    unsubscribeUrl: urlMatch ? urlMatch[1] : undefined,
+    unsubscribeMailto: mailtoMatch ? mailtoMatch[1] : undefined,
+  };
+}
+
+export async function scanLiveGmailCleanupCandidates(
+  bearerHeaderOrToken: string,
+  maxResults = 12
+): Promise<GmailCleanupCandidate[]> {
+  const authHeader = bearerHeaderOrToken.startsWith('Bearer ')
+    ? bearerHeaderOrToken
+    : `Bearer ${bearerHeaderOrToken}`;
+
+  const promoQuery = encodeURIComponent(
+    'category:promotions OR category:social OR unsubscribe OR "se désabonner" OR newsletter'
+  );
+  let listRes = await fetch(
+    `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${promoQuery}&maxResults=${maxResults}`,
+    {
+      headers: { Authorization: authHeader },
+      cache: 'no-store',
+    }
+  );
+
+  if (!listRes.ok) {
+    throw new Error(`Gmail API returned status ${listRes.status}`);
+  }
+
+  let listData = (await listRes.json()) as { messages?: { id: string }[] };
+  let messageRefs = listData.messages || [];
+
+  // Fallback to general inbox messages if no promotional query match
+  if (messageRefs.length === 0) {
+    listRes = await fetch(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${maxResults}`,
+      {
+        headers: { Authorization: authHeader },
+        cache: 'no-store',
+      }
+    );
+    if (listRes.ok) {
+      listData = (await listRes.json()) as { messages?: { id: string }[] };
+      messageRefs = listData.messages || [];
+    }
+  }
+
+  const details = await Promise.all(
+    messageRefs.slice(0, maxResults).map(async (msg): Promise<GmailCleanupCandidate | null> => {
+      try {
+        const msgRes = await fetch(
+          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date&metadataHeaders=List-Unsubscribe`,
+          {
+            headers: { Authorization: authHeader },
+            cache: 'no-store',
+          }
+        );
+        if (!msgRes.ok) return null;
+        const msgJson = (await msgRes.json()) as {
+          id: string;
+          snippet?: string;
+          labelIds?: string[];
+          payload?: { headers?: { name: string; value: string }[] };
+        };
+        const headers = msgJson.payload?.headers || [];
+        const getHeader = (name: string) =>
+          headers.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value || '';
+
+        const rawUnsub = getHeader('List-Unsubscribe');
+        const { unsubscribeUrl, unsubscribeMailto } = parseListUnsubscribeHeader(rawUnsub);
+        const labels = msgJson.labelIds || [];
+        const categoryLabel = labels.includes('CATEGORY_PROMOTIONS')
+          ? 'Promotion'
+          : labels.includes('CATEGORY_SOCIAL')
+            ? 'Réseau social'
+            : rawUnsub
+              ? 'Newsletter'
+              : 'Courrier';
+
+        return {
+          id: msgJson.id,
+          subject: (getHeader('Subject') || '(Sans objet)').slice(0, 140),
+          from: (getHeader('From') || 'Expéditeur inconnu').slice(0, 120),
+          date: (getHeader('Date') || '').slice(0, 48),
+          snippet: (msgJson.snippet || '').slice(0, 140),
+          categoryLabel,
+          unsubscribeUrl: unsubscribeUrl ? unsubscribeUrl.slice(0, 500) : undefined,
+          unsubscribeMailto: unsubscribeMailto
+            ? unsubscribeMailto.slice(0, 240)
+            : undefined,
+        };
+      } catch {
+        return null;
+      }
+    })
+  );
+
+  return details.filter((item): item is GmailCleanupCandidate => item !== null);
+}
+
+export async function trashLiveGmailMessages(
+  bearerHeaderOrToken: string,
+  messageIds: string[]
+): Promise<{ trashedIds: string[]; trashedCount: number; failedCount: number }> {
+  const authHeader = bearerHeaderOrToken.startsWith('Bearer ')
+    ? bearerHeaderOrToken
+    : `Bearer ${bearerHeaderOrToken}`;
+
+  const trashedIds: string[] = [];
+  let failedCount = 0;
+
+  await Promise.all(
+    messageIds.map(async (id) => {
+      const cleanId = (id || '').trim();
+      if (!cleanId) return;
+      try {
+        const res = await fetch(
+          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(cleanId)}/trash`,
+          {
+            method: 'POST',
+            headers: {
+              Authorization: authHeader,
+              'Content-Type': 'application/json',
+            },
+          }
+        );
+        if (res.ok) {
+          trashedIds.push(cleanId);
+        } else {
+          failedCount++;
+        }
+      } catch {
+        failedCount++;
+      }
+    })
+  );
+
+  return { trashedIds, trashedCount: trashedIds.length, failedCount };
+}
+
+export async function executeLiveUnsubscribeBatch(
+  urls: string[]
+): Promise<{ succeededUrls: string[]; failedCount: number }> {
+  const uniqueUrls = Array.from(
+    new Set(
+      (urls || [])
+        .map((u) => (u || '').trim())
+        .filter((u) => u.startsWith('http://') || u.startsWith('https://'))
+    )
+  ).slice(0, 25);
+
+  const succeededUrls: string[] = [];
+  let failedCount = 0;
+
+  await Promise.all(
+    uniqueUrls.map(async (url) => {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 4500);
+        try {
+          // 1. Try RFC 8058 One-Click Unsubscribe POST first
+          const postRes = await fetch(url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+              'User-Agent': 'Mozilla/5.0 (compatible; OrbitGmailUnsubscribe/1.0)',
+            },
+            body: 'List-Unsubscribe=One-Click',
+            redirect: 'follow',
+            signal: controller.signal,
+          });
+          if (postRes.ok || (postRes.status >= 200 && postRes.status < 400)) {
+            succeededUrls.push(url);
+            return;
+          }
+          // 2. Fallback to HTTP GET on the unsubscribe link
+          const getRes = await fetch(url, {
+            method: 'GET',
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (compatible; OrbitGmailUnsubscribe/1.0)',
+            },
+            redirect: 'follow',
+            signal: controller.signal,
+          });
+          if (getRes.ok || (getRes.status >= 200 && getRes.status < 400)) {
+            succeededUrls.push(url);
+          } else {
+            failedCount++;
+          }
+        } finally {
+          clearTimeout(timer);
+        }
+      } catch {
+        failedCount++;
+      }
+    })
+  );
+
+  return { succeededUrls, failedCount };
 }
 
 export async function fetchLiveGmailMessages(

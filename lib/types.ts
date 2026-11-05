@@ -73,6 +73,34 @@ export interface VmActionTrace {
   }[];
 }
 
+export interface ChatExecutionMetadata {
+  modelUsed: string;
+  providerId: string;
+  latencyMs: number;
+  ragDocsCited: string[];
+  httpCalls: string[];
+  attachedFileName?: string;
+}
+
+export interface GmailCleanupCandidate {
+  id: string;
+  subject: string;
+  from: string;
+  date: string;
+  snippet: string;
+  categoryLabel: string;
+  unsubscribeUrl?: string;
+  unsubscribeMailto?: string;
+}
+
+export interface GmailCleanupProposal {
+  scannedQuery: string;
+  scannedAt: string;
+  candidates: GmailCleanupCandidate[];
+  completed?: boolean;
+  trashedCount?: number;
+}
+
 export interface AgentStructuredResponse {
   type: AgentResponseType;
   message: string;
@@ -81,6 +109,8 @@ export interface AgentStructuredResponse {
   routine?: RoutineDraft;
   vmTrace?: VmActionTrace;
   editingRoutineId?: string;
+  executionMeta?: ChatExecutionMetadata;
+  gmailCleanupProposal?: GmailCleanupProposal;
 }
 
 export interface KnowledgeDocument {
@@ -94,7 +124,55 @@ export interface KnowledgeDocument {
   createdAt: string;
 }
 
-export type AgentModelId = 'gemini-3-flash-preview' | 'gemini-3.1-pro-preview';
+export type FreeAgentApiProviderId =
+  | 'google_ai_studio'
+  | 'groq'
+  | 'router9'
+  | 'speechify'
+  | 'bai_promo'
+  | 'nvidia_nim'
+  | 'openrouter'
+  | 'huggingface_router'
+  | 'orcarouter';
+
+export interface FreeApiKeyEntry {
+  keyId: string;
+  maskedKey: string;
+  rawKey: string;
+  isEnabled: boolean;
+  isHealthy: boolean;
+  statusText: 'sain' | 'vérification' | 'erreur';
+  lastError?: string; // e.g. 'fetch failed' or 'HTTP 401: Invalid API Key'
+  checkedAtTime: string; // e.g. '12:55'
+}
+
+export interface FreeAgentApiProvider {
+  providerId: FreeAgentApiProviderId;
+  name: string;
+  badgeNote?: string;
+  isEnabled: boolean;
+  endpointUrl: string;
+  defaultModel: AgentModelId;
+  availableModels: {
+    id: AgentModelId;
+    label: string;
+    freeTierNote: string;
+  }[];
+  docsUrl: string;
+  keys: FreeApiKeyEntry[];
+}
+
+export type AgentModelId =
+  | 'gemini-3-flash-preview'
+  | 'gemini-3.1-pro-preview'
+  | 'groq/llama-3.3-70b-versatile'
+  | 'router9/shared-monthly-free'
+  | 'speechify/tts-multilingual-free'
+  | 'bai/promotional-free-v1'
+  | 'nvidia/llama-3.1-405b-instruct'
+  | 'openrouter/deepseek-r1-free'
+  | 'huggingface/qwen-2.5-72b-instruct'
+  | 'orcarouter/free-key-v1';
 
 export type AgentTone = 'executive' | 'analytical' | 'technical' | 'commercial';
 
@@ -142,6 +220,7 @@ export interface AgentConfig {
   handoffTargetAgentId?: string;
   // Studio & Advanced Options (1-8)
   model?: AgentModelId;
+  apiProviderId?: FreeAgentApiProviderId;
   temperature?: number;
   tone?: AgentTone;
   outputFormat?: AgentOutputFormat;
@@ -211,6 +290,8 @@ export interface AgentChatMessage {
   content: string;
   responseType: AgentResponseType;
   structured?: AgentStructuredResponse;
+  executionMeta?: ChatExecutionMetadata;
+  attachedFileName?: string;
   timeLabel: string;
   createdAt: string;
 }

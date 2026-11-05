@@ -448,16 +448,18 @@ export function VmDesktop({ agentId, onClose }: VmDesktopProps) {
   // Sync filesystem when agent trace or RAG docs update (using primitive dependencies only)
   useEffect(() => {
     if (!agent) return;
-    setVmFiles((prev) => {
-      const freshBase = buildInitialVmFileSystem(
-        agent,
-        storedTrace,
-        rawKnowledgeDocs || []
-      );
-      const customFiles = prev.filter(
-        (f) => !freshBase.some((b) => b.id === f.id || b.name === f.name)
-      );
-      return [...freshBase, ...customFiles];
+    queueMicrotask(() => {
+      setVmFiles((prev) => {
+        const freshBase = buildInitialVmFileSystem(
+          agent,
+          storedTrace,
+          rawKnowledgeDocs || []
+        );
+        const customFiles = prev.filter(
+          (f) => !freshBase.some((b) => b.id === f.id || b.name === f.name)
+        );
+        return [...freshBase, ...customFiles];
+      });
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent?.agentId, agent?.name, agentToolsKey, traceUrlKey, knowledgeDocsCount]);
@@ -1111,14 +1113,14 @@ export function VmDesktop({ agentId, onClose }: VmDesktopProps) {
       }}
     >
       {/* 1. TOP BAR WITH OS SELECTOR (Ubuntu 24.04 / Windows 11 / Linux XFCE) + REAL KERNEL BADGE + E2B STREAM */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-white px-4 py-2 text-slate-900">
-        <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-white px-2.5 py-2 sm:px-4 text-slate-900">
+        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
           <Monitor className="h-4 w-4 text-slate-700" />
-          <span className="text-[14px] font-bold tracking-tight text-slate-900">
+          <span className="text-[13px] sm:text-[14px] font-bold tracking-tight text-slate-900">
             VM Desktop
           </span>
           <span
-            className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
+            className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] sm:text-[11px] font-bold ${
               agent.vmStatus === 'active'
                 ? 'bg-[#1a56db] text-white'
                 : 'bg-amber-500 text-white'
@@ -1134,7 +1136,7 @@ export function VmDesktop({ agentId, onClose }: VmDesktopProps) {
                 ? `${realSystemInfo.distro} · ${realSystemInfo.kernel} (${realSystemInfo.arch}) · ${realSystemInfo.pythonVersion}`
                 : 'Connecté au noyau Linux du serveur'
             }
-            className="inline-flex items-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-800"
+            className="hidden sm:inline-flex items-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-800"
           >
             <span className="h-2 w-2 rounded-full bg-emerald-500" />
             Noyau Réel : {realSystemInfo ? `${realSystemInfo.kernel} (${realSystemInfo.arch})` : 'Linux x86_64'}
@@ -1144,12 +1146,12 @@ export function VmDesktop({ agentId, onClose }: VmDesktopProps) {
           <div
             role="group"
             aria-label="Sélecteur de système d'exploitation"
-            className="flex items-center rounded-lg border border-slate-200 bg-slate-100 p-0.5 text-[11px] font-semibold"
+            className="flex items-center rounded-lg border border-slate-200 bg-slate-100 p-0.5 text-[10px] sm:text-[11px] font-semibold"
           >
             <button
               type="button"
               onClick={() => setOsSkin('ubuntu')}
-              className={`rounded-md px-2.5 py-1 transition ${
+              className={`rounded-md px-2 sm:px-2.5 py-1 transition ${
                 osSkin === 'ubuntu'
                   ? 'bg-[#e95420] text-white shadow-2xs'
                   : 'text-slate-600 hover:text-slate-900'
@@ -1160,7 +1162,7 @@ export function VmDesktop({ agentId, onClose }: VmDesktopProps) {
             <button
               type="button"
               onClick={() => setOsSkin('windows11')}
-              className={`rounded-md px-2.5 py-1 transition ${
+              className={`rounded-md px-2 sm:px-2.5 py-1 transition ${
                 osSkin === 'windows11'
                   ? 'bg-[#0067c0] text-white shadow-2xs'
                   : 'text-slate-600 hover:text-slate-900'
@@ -1171,7 +1173,7 @@ export function VmDesktop({ agentId, onClose }: VmDesktopProps) {
             <button
               type="button"
               onClick={() => setOsSkin('xfce')}
-              className={`rounded-md px-2.5 py-1 transition ${
+              className={`rounded-md px-2 sm:px-2.5 py-1 transition ${
                 osSkin === 'xfce'
                   ? 'bg-slate-900 text-white shadow-2xs'
                   : 'text-slate-600 hover:text-slate-900'
@@ -1182,18 +1184,18 @@ export function VmDesktop({ agentId, onClose }: VmDesktopProps) {
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
           <button
             type="button"
             onClick={() => setShowCloudStreamConfig((v) => !v)}
-            className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-semibold transition ${
+            className={`inline-flex items-center gap-1 rounded-md border px-2 sm:px-2.5 py-1 text-[11px] sm:text-xs font-semibold transition ${
               showCloudStreamConfig || activeRemoteStreamUrl
                 ? 'border-indigo-600 bg-indigo-50 text-indigo-700'
                 : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
             }`}
           >
             <Cpu className="h-3.5 w-3.5" />
-            {activeRemoteStreamUrl ? 'Flux Distant Actif' : 'Flux Cloud / E2B'}
+            <span>{activeRemoteStreamUrl ? 'Flux Actif' : 'Flux Cloud / E2B'}</span>
           </button>
 
           <button
@@ -1204,10 +1206,10 @@ export function VmDesktop({ agentId, onClose }: VmDesktopProps) {
               setShowNoVncBanner(true);
               setTimeout(() => setShowNoVncBanner(false), 2200);
             }}
-            className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1 text-xs font-semibold text-slate-800 shadow-2xs transition hover:bg-slate-50"
+            className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-[11px] sm:text-xs font-semibold text-slate-800 shadow-2xs transition hover:bg-slate-50"
           >
             <RotateCcw className="h-3.5 w-3.5 text-slate-700" />
-            Reconnect
+            <span className="hidden sm:inline">Reconnect</span>
           </button>
 
           <button
@@ -1218,17 +1220,17 @@ export function VmDesktop({ agentId, onClose }: VmDesktopProps) {
                 agent.vmStatus === 'active' ? 'paused' : 'active'
               )
             }
-            className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1 text-xs font-semibold text-slate-800 shadow-2xs transition hover:bg-slate-50"
+            className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-[11px] sm:text-xs font-semibold text-slate-800 shadow-2xs transition hover:bg-slate-50"
           >
             {agent.vmStatus === 'active' ? (
               <>
                 <Pause className="h-3.5 w-3.5 text-slate-700" />
-                Pause
+                <span className="hidden sm:inline">Pause</span>
               </>
             ) : (
               <>
                 <Play className="h-3.5 w-3.5 text-emerald-600" />
-                Resume
+                <span className="hidden sm:inline">Resume</span>
               </>
             )}
           </button>
@@ -1237,7 +1239,7 @@ export function VmDesktop({ agentId, onClose }: VmDesktopProps) {
             type="button"
             aria-label="Close VM Desktop"
             onClick={onClose}
-            className="ml-1 rounded-md p-1 text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
+            className="ml-0.5 rounded-md p-1 text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
           >
             <X className="h-4 w-4" />
           </button>
@@ -2059,7 +2061,7 @@ export function VmDesktop({ agentId, onClose }: VmDesktopProps) {
                         zIndex: windows.chrome.zIndex,
                       }
                 }
-                className="absolute flex flex-col overflow-hidden rounded-t-md border border-[#8c8c8c] bg-white text-slate-900 shadow-[0_20px_50px_rgba(0,0,0,0.85)]"
+                className="absolute max-sm:!top-1 max-sm:!left-1 max-sm:!w-[calc(100%-8px)] max-sm:!h-[calc(100%-50px)] flex flex-col overflow-hidden rounded-t-md border border-[#8c8c8c] bg-white text-slate-900 shadow-[0_20px_50px_rgba(0,0,0,0.85)]"
               >
                 {/* Chrome Top Tab Bar (#d4d4d4) */}
                 <div
@@ -2478,7 +2480,7 @@ export function VmDesktop({ agentId, onClose }: VmDesktopProps) {
                         zIndex: windows.terminal.zIndex,
                       }
                 }
-                className="absolute flex flex-col overflow-hidden rounded-t-md border border-[#454545] bg-[#0f141c] text-slate-100 shadow-2xl"
+                className="absolute max-sm:!top-1 max-sm:!left-1 max-sm:!w-[calc(100%-8px)] max-sm:!h-[calc(100%-50px)] flex flex-col overflow-hidden rounded-t-md border border-[#454545] bg-[#0f141c] text-slate-100 shadow-2xl"
               >
                 <div
                   onMouseDown={(e) => {
@@ -2603,7 +2605,7 @@ export function VmDesktop({ agentId, onClose }: VmDesktopProps) {
                         zIndex: windows.files.zIndex,
                       }
                 }
-                className="absolute flex flex-col overflow-hidden rounded-t-md border border-[#454545] bg-[#1e2229] text-slate-100 shadow-2xl"
+                className="absolute max-sm:!top-1 max-sm:!left-1 max-sm:!w-[calc(100%-8px)] max-sm:!h-[calc(100%-50px)] flex flex-col overflow-hidden rounded-t-md border border-[#454545] bg-[#1e2229] text-slate-100 shadow-2xl"
               >
                 <div
                   onMouseDown={(e) => {
@@ -2672,7 +2674,7 @@ export function VmDesktop({ agentId, onClose }: VmDesktopProps) {
 
                 <div className="flex flex-1 overflow-hidden">
                   {/* Left Places Sidebar */}
-                  <div className="w-44 shrink-0 space-y-1 border-r border-white/10 bg-[#181b21] p-2 text-xs">
+                  <div className="w-28 sm:w-44 shrink-0 space-y-1 border-r border-white/10 bg-[#181b21] p-1.5 sm:p-2 text-xs">
                     {(
                       [
                         { id: 'Home', label: 'Home', icon: Home },
@@ -2765,7 +2767,7 @@ export function VmDesktop({ agentId, onClose }: VmDesktopProps) {
                         zIndex: windows.writer.zIndex,
                       }
                 }
-                className="absolute flex flex-col overflow-hidden rounded-t-md border border-[#454545] bg-white text-slate-900 shadow-2xl"
+                className="absolute max-sm:!top-1 max-sm:!left-1 max-sm:!w-[calc(100%-8px)] max-sm:!h-[calc(100%-50px)] flex flex-col overflow-hidden rounded-t-md border border-[#454545] bg-white text-slate-900 shadow-2xl"
               >
                 <div
                   onMouseDown={(e) => {
@@ -2872,7 +2874,7 @@ export function VmDesktop({ agentId, onClose }: VmDesktopProps) {
                         zIndex: windows.paint.zIndex,
                       }
                 }
-                className="absolute flex flex-col overflow-hidden rounded-t-md border border-[#454545] bg-[#f8fafc] text-slate-900 shadow-2xl"
+                className="absolute max-sm:!top-1 max-sm:!left-1 max-sm:!w-[calc(100%-8px)] max-sm:!h-[calc(100%-50px)] flex flex-col overflow-hidden rounded-t-md border border-[#454545] bg-[#f8fafc] text-slate-900 shadow-2xl"
               >
                 <div
                   onMouseDown={(e) => {
@@ -3038,7 +3040,7 @@ export function VmDesktop({ agentId, onClose }: VmDesktopProps) {
                   height: windows.mail.height,
                   zIndex: windows.mail.zIndex,
                 }}
-                className="absolute flex flex-col overflow-hidden rounded-t-md border border-[#454545] bg-white text-slate-900 shadow-2xl"
+                className="absolute max-sm:!top-1 max-sm:!left-1 max-sm:!w-[calc(100%-8px)] max-sm:!h-[calc(100%-50px)] flex flex-col overflow-hidden rounded-t-md border border-[#454545] bg-white text-slate-900 shadow-2xl"
               >
                 <div
                   onMouseDown={(e) => {
@@ -3076,8 +3078,8 @@ export function VmDesktop({ agentId, onClose }: VmDesktopProps) {
                   </div>
                 </div>
 
-                <div className="flex flex-1 overflow-hidden">
-                  <div className="w-60 shrink-0 border-r border-slate-200 bg-slate-50 p-2">
+                <div className="flex flex-col sm:flex-row flex-1 overflow-hidden">
+                  <div className="w-full sm:w-60 shrink-0 border-b sm:border-b-0 sm:border-r border-slate-200 bg-slate-50 p-2">
                     <p className="px-2 py-1 text-[10px] font-bold tracking-wider text-slate-400 uppercase">
                       Boîte de réception ({inboxEmails.length})
                     </p>
@@ -3167,7 +3169,7 @@ export function VmDesktop({ agentId, onClose }: VmDesktopProps) {
                   height: windows.viewer.height,
                   zIndex: windows.viewer.zIndex,
                 }}
-                className="absolute flex flex-col overflow-hidden rounded-t-md border border-[#454545] bg-[#1e2229] text-slate-100 shadow-2xl"
+                className="absolute max-sm:!top-1 max-sm:!left-1 max-sm:!w-[calc(100%-8px)] max-sm:!h-[calc(100%-50px)] flex flex-col overflow-hidden rounded-t-md border border-[#454545] bg-[#1e2229] text-slate-100 shadow-2xl"
               >
                 <div
                   onMouseDown={(e) => {
@@ -3232,7 +3234,7 @@ export function VmDesktop({ agentId, onClose }: VmDesktopProps) {
                   width: 500,
                   zIndex: 45,
                 }}
-                className="absolute flex flex-col overflow-hidden rounded-md border border-[#454545] bg-[#22262e] text-slate-100 shadow-2xl"
+                className="absolute max-sm:!top-3 max-sm:!left-2 max-sm:!w-[calc(100%-16px)] flex flex-col overflow-hidden rounded-md border border-[#454545] bg-[#22262e] text-slate-100 shadow-2xl"
               >
                 <div className="flex h-8 items-center justify-between bg-[#2c2c2c] px-3 text-xs font-semibold">
                   <span>
@@ -3333,17 +3335,17 @@ export function VmDesktop({ agentId, onClose }: VmDesktopProps) {
             )}
 
             {/* =====================================================================
-                3D. BOTTOM DOCK PANEL (Matches 6 icons in image_8495c65a.png & image_b08c14c0.png)
+                3D. BOTTOM DOCK PANEL (Frosted-Glass OS Dock with Active Indicators)
                ===================================================================== */}
-            <div className="absolute bottom-0 left-1/2 z-30 flex -translate-x-1/2 items-center gap-1.5 rounded-t-md border border-b-0 border-[#454545] bg-[#262626]/95 px-2.5 py-1 shadow-2xl">
+            <div className="absolute bottom-1.5 left-1/2 z-30 flex -translate-x-1/2 items-center gap-1.5 rounded-2xl border border-white/15 bg-[#1e1e24]/85 px-3 py-1.5 shadow-[0_12px_32px_rgba(0,0,0,0.65)] backdrop-blur-md">
               {/* 1. Show Desktop */}
               <button
                 type="button"
                 onClick={showDesktopAll}
                 title="Show Desktop"
-                className="group flex h-9 w-9 items-center justify-center rounded-sm transition hover:bg-white/10"
+                className="group relative flex h-9 w-9 items-center justify-center rounded-xl transition hover:-translate-y-0.5 hover:bg-white/10"
               >
-                <div className="flex h-7 w-8 items-center justify-center rounded-xs border border-sky-300/60 bg-linear-to-b from-[#5cc3ff] to-[#1e88e5] shadow-xs">
+                <div className="flex h-7 w-8 items-center justify-center rounded-lg border border-sky-300/60 bg-linear-to-b from-[#5cc3ff] to-[#1e88e5] shadow-xs">
                   <Minimize2 className="h-4 w-4 text-white" />
                 </div>
               </button>
@@ -3353,11 +3355,14 @@ export function VmDesktop({ agentId, onClose }: VmDesktopProps) {
                 type="button"
                 onClick={() => launchApp('terminal')}
                 title="Terminal Emulator (Vrai Bash Linux)"
-                className="group flex h-9 w-9 items-center justify-center rounded-sm transition hover:bg-white/10"
+                className="group relative flex h-9 w-9 items-center justify-center rounded-xl transition hover:-translate-y-0.5 hover:bg-white/10"
               >
-                <div className="flex h-7 w-8 items-center justify-center rounded-xs border border-slate-500 bg-[#1c1c1c] font-mono text-xs font-bold text-white shadow-xs">
+                <div className="flex h-7 w-8 items-center justify-center rounded-lg border border-slate-500 bg-[#141418] font-mono text-xs font-bold text-emerald-400 shadow-xs">
                   $_
                 </div>
+                {windows.terminal.isOpen && (
+                  <span className="absolute -bottom-0.5 h-1 w-1 rounded-full bg-emerald-400" />
+                )}
               </button>
 
               {/* 3. File Manager (Home Folder) */}
@@ -3368,11 +3373,14 @@ export function VmDesktop({ agentId, onClose }: VmDesktopProps) {
                   launchApp('files', 'Home — File Manager (Thunar)');
                 }}
                 title="File Manager (/home/user)"
-                className="group flex h-9 w-9 items-center justify-center rounded-sm transition hover:bg-white/10"
+                className="group relative flex h-9 w-9 items-center justify-center rounded-xl transition hover:-translate-y-0.5 hover:bg-white/10"
               >
-                <div className="flex h-7 w-8 items-center justify-center rounded-xs border border-slate-300 bg-linear-to-b from-slate-100 to-slate-300 shadow-xs">
+                <div className="flex h-7 w-8 items-center justify-center rounded-lg border border-slate-300 bg-linear-to-b from-slate-100 to-slate-300 shadow-xs">
                   <Home className="h-4 w-4 text-slate-700" />
                 </div>
+                {windows.files.isOpen && (
+                  <span className="absolute -bottom-0.5 h-1 w-1 rounded-full bg-sky-400" />
+                )}
               </button>
 
               {/* 4. Web Browser (Blue Globe — Google Chrome) */}
@@ -3380,11 +3388,14 @@ export function VmDesktop({ agentId, onClose }: VmDesktopProps) {
                 type="button"
                 onClick={() => launchApp('chrome')}
                 title="Web Browser (Google Chrome)"
-                className="group flex h-9 w-9 items-center justify-center rounded-sm transition hover:bg-white/10"
+                className="group relative flex h-9 w-9 items-center justify-center rounded-xl transition hover:-translate-y-0.5 hover:bg-white/10"
               >
                 <div className="flex h-8 w-8 items-center justify-center rounded-full border border-sky-300/50 bg-linear-to-b from-[#38bdf8] via-[#0284c7] to-[#1d4ed8] shadow-md">
                   <Globe className="h-5 w-5 text-white" />
                 </div>
+                {windows.chrome.isOpen && (
+                  <span className="absolute -bottom-0.5 h-1 w-1 rounded-full bg-sky-400" />
+                )}
               </button>
 
               {/* 5. Application Finder (Magnifying Glass) */}
@@ -3392,12 +3403,15 @@ export function VmDesktop({ agentId, onClose }: VmDesktopProps) {
                 type="button"
                 onClick={() => launchApp('run')}
                 title="Application Finder"
-                className="group flex h-9 w-9 items-center justify-center rounded-sm transition hover:bg-white/10"
+                className="group relative flex h-9 w-9 items-center justify-center rounded-xl transition hover:-translate-y-0.5 hover:bg-white/10"
               >
-                <Search className="h-6 w-6 text-slate-200 transition group-hover:scale-110" />
+                <Search className="h-5 w-5 text-slate-200 transition group-hover:scale-110" />
+                {windows.run.isOpen && (
+                  <span className="absolute -bottom-0.5 h-1 w-1 rounded-full bg-sky-400" />
+                )}
               </button>
 
-              <div className="mx-0.5 h-6 w-px bg-[#454545]" />
+              <div className="mx-0.5 h-6 w-px bg-white/15" />
 
               {/* 6. Documents / Knowledge Directory Folder */}
               <button
@@ -3407,9 +3421,9 @@ export function VmDesktop({ agentId, onClose }: VmDesktopProps) {
                   launchApp('files', 'Documents (RAG) — File Manager');
                 }}
                 title="Documents & Agent RAG Files"
-                className="group flex h-9 w-9 items-center justify-center rounded-sm transition hover:bg-white/10"
+                className="group relative flex h-9 w-9 items-center justify-center rounded-xl transition hover:-translate-y-0.5 hover:bg-white/10"
               >
-                <div className="flex h-7 w-8 items-center justify-center rounded-xs border border-amber-300/70 bg-linear-to-b from-[#f6d9a8] to-[#dfb16b] shadow-xs">
+                <div className="flex h-7 w-8 items-center justify-center rounded-lg border border-amber-300/70 bg-linear-to-b from-[#f6d9a8] to-[#dfb16b] shadow-xs">
                   <Folder className="h-4 w-4 text-amber-950/70" />
                 </div>
               </button>

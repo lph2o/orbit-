@@ -62,6 +62,7 @@ import {
 } from '@/lib/orbit-logic';
 import { useOrbit } from '@/context/OrbitContext';
 import { ToolIcon } from '@/components/workspace/ToolIcon';
+import { FreeApiRouterPanel } from '@/components/workspace/FreeApiRouterPanel';
 import {
   LiveCalendarEvent,
   LiveGitHubItem,
@@ -254,29 +255,31 @@ export function ConfigPanel({
   const [linearTokenInput, setLinearTokenInput] = useState<string>('');
 
   useEffect(() => {
-    setNameInput(agent.name);
-    setDescInput(agent.description);
-    setAvatarUrl(agent.agentImage);
-    setHandoffAgentInput(agent.handoffTargetAgentId || '');
-    setModelInput(agent.model || 'gemini-3-flash-preview');
-    setTemperatureInput(agent.temperature ?? 0.2);
-    setToneInput(agent.tone || 'executive');
-    setOutputFormatInput(agent.outputFormat || 'bullets');
-    setResponseLangInput(agent.responseLanguage || 'auto');
-    setAutonomyInput(agent.autonomyLevel || 'copilot');
-    setMaxDailyActionsInput(agent.maxDailyActions ?? 25);
-    setAllowedChannelsInput(agent.allowedSlackChannels || '#new-channel, #general');
-    setMemoryList(agent.memoryNotes || []);
-    setCustomVars(agent.customVariables || {});
-    setEventTriggersList(
-      agent.eventTriggers && agent.eventTriggers.length > 0
-        ? agent.eventTriggers
-        : createDefaultEventTriggers()
-    );
-    setVmTimeoutInput(agent.vmTimeoutMinutes ?? 5);
-    setVmRegionInput(agent.vmRegion || 'eu-west-1');
-    setVmStartupScriptInput(agent.vmStartupScript || '');
-    setGmailSubject(`[Orbit · ${agent.name}] Synthèse exécutive`);
+    queueMicrotask(() => {
+      setNameInput(agent.name);
+      setDescInput(agent.description);
+      setAvatarUrl(agent.agentImage);
+      setHandoffAgentInput(agent.handoffTargetAgentId || '');
+      setModelInput(agent.model || 'gemini-3-flash-preview');
+      setTemperatureInput(agent.temperature ?? 0.2);
+      setToneInput(agent.tone || 'executive');
+      setOutputFormatInput(agent.outputFormat || 'bullets');
+      setResponseLangInput(agent.responseLanguage || 'auto');
+      setAutonomyInput(agent.autonomyLevel || 'copilot');
+      setMaxDailyActionsInput(agent.maxDailyActions ?? 25);
+      setAllowedChannelsInput(agent.allowedSlackChannels || '#new-channel, #general');
+      setMemoryList(agent.memoryNotes || []);
+      setCustomVars(agent.customVariables || {});
+      setEventTriggersList(
+        agent.eventTriggers && agent.eventTriggers.length > 0
+          ? agent.eventTriggers
+          : createDefaultEventTriggers()
+      );
+      setVmTimeoutInput(agent.vmTimeoutMinutes ?? 5);
+      setVmRegionInput(agent.vmRegion || 'eu-west-1');
+      setVmStartupScriptInput(agent.vmStartupScript || '');
+      setGmailSubject(`[Orbit · ${agent.name}] Synthèse exécutive`);
+    });
   }, [
     agent.agentId,
     agent.name,
@@ -300,12 +303,16 @@ export function ConfigPanel({
   ]);
 
   useEffect(() => {
-    setSlackWebhookInput(slackWebhookUrl);
+    queueMicrotask(() => {
+      setSlackWebhookInput(slackWebhookUrl);
+    });
   }, [slackWebhookUrl]);
 
   useEffect(() => {
-    setMounted(true);
-    setNowMs(Date.now());
+    queueMicrotask(() => {
+      setMounted(true);
+      setNowMs(Date.now());
+    });
     const timer = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(timer);
   }, []);
@@ -831,7 +838,7 @@ export function ConfigPanel({
       : `/api/webhooks/agent/${agent.agentId}`;
 
   return (
-    <aside className="w-[410px] shrink-0 border-l border-slate-200 bg-slate-50/60 flex flex-col h-screen overflow-hidden">
+    <aside className="w-full lg:w-[410px] shrink-0 lg:border-l border-slate-200 bg-slate-50/60 flex flex-col h-full min-h-0 overflow-hidden">
       {/* Top Agent Identity & Save Header */}
       <div className="p-4 border-b border-slate-200 bg-white space-y-3">
         <div className="flex items-center justify-between gap-2">
@@ -1277,6 +1284,11 @@ export function ConfigPanel({
                   <span>0.0 (Strictement factuel)</span>
                   <span>1.0 (Créatif / Rédactionnel)</span>
                 </div>
+              </div>
+
+              {/* 2B. Routeur d'APIs d'Agents Gratuits (Google AI Studio, Groq, Router9, Speechify, B.AI, NVIDIA NIM, OpenRouter, HuggingFace Router, OrcaRouter) */}
+              <div className="pt-2">
+                <FreeApiRouterPanel agent={agent} />
               </div>
             </div>
 
@@ -1867,16 +1879,16 @@ export function ConfigPanel({
         {/* TAB 2: CONNECTED TOOLS & LIVE OAUTH / SLACK / GITHUB / NOTION HUB */}
         {activeTab === 'tools' && (
           <div className="space-y-3">
-            <div className="flex items-center justify-between gap-2">
-              <div>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="min-w-0">
                 <h4 className="text-xs font-bold text-slate-900">
                   {t.config.connectedToolsTitle} ({agent.tools.length}/{TOOL_CATALOG.length})
                 </h4>
-                <p className="text-[11px] text-slate-500 font-mono">
+                <p className="text-[11px] text-slate-500 font-mono truncate">
                   Session: {agent.composioSessionId || 'sess_comp_active'}
                 </p>
               </div>
-              <div className="flex items-center gap-1.5">
+              <div className="flex flex-wrap items-center gap-1.5">
                 {agent.tools.length < TOOL_CATALOG.length && (
                   <button
                     type="button"
@@ -1901,6 +1913,9 @@ export function ConfigPanel({
                 </button>
               </div>
             </div>
+
+            {/* Free Agent API Providers Router inside Tools Tab */}
+            <FreeApiRouterPanel agent={agent} compact />
 
             {/* Mandatory Explicit User Confirmation Modal for Mutating Workspace / Gmail / Notion / Slack Operations */}
             {pendingWorkspaceMutation && (

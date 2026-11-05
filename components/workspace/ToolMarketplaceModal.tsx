@@ -212,13 +212,13 @@ export function ToolMarketplaceModal() {
       role="dialog"
       aria-modal="true"
       aria-label={t.marketplace.title}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-2 sm:p-4"
     >
-      <div className="w-full max-w-4xl rounded-xl border border-slate-200 bg-white shadow-xl flex flex-col max-h-[88vh] overflow-hidden">
+      <div className="w-full max-w-4xl rounded-xl border border-slate-200 bg-white shadow-xl flex flex-col max-h-[92dvh] sm:max-h-[88vh] overflow-hidden">
         {/* Modal Header */}
-        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between gap-4">
-          <div>
-            <h2 className="text-base font-bold text-slate-900">
+        <div className="px-3.5 py-3 sm:px-6 sm:py-4 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2.5 sm:gap-4">
+          <div className="min-w-0">
+            <h2 className="text-sm sm:text-base font-bold text-slate-900">
               {t.marketplace.title}
             </h2>
             <p className="text-xs text-slate-500 mt-0.5">
@@ -226,7 +226,7 @@ export function ToolMarketplaceModal() {
             </p>
           </div>
 
-          <div className="flex items-center gap-2.5">
+          <div className="flex flex-wrap items-center gap-2">
             {targetAgent && connectedSlugs.size < TOOL_CATALOG.length && (
               <button
                 type="button"
@@ -245,8 +245,8 @@ export function ToolMarketplaceModal() {
               </button>
             )}
             {agents.length > 0 && (
-              <div className="flex items-center gap-2">
-                <label htmlFor="marketplace-agent-select" className="text-xs text-slate-600 whitespace-nowrap">
+              <div className="flex items-center gap-1.5 sm:gap-2">
+                <label htmlFor="marketplace-agent-select" className="hidden sm:inline text-xs text-slate-600 whitespace-nowrap">
                   {t.marketplace.targetAgent}
                 </label>
                 <select
@@ -275,7 +275,7 @@ export function ToolMarketplaceModal() {
         </div>
 
         {/* Live OAuth & Slack Webhook Configuration Banner */}
-        <div className="px-6 py-3 border-b border-slate-200 bg-slate-50 flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+        <div className="px-3.5 py-2.5 sm:px-6 sm:py-3 border-b border-slate-200 bg-slate-50 flex flex-col md:flex-row items-stretch md:items-center justify-between gap-2.5 sm:gap-3">
           {/* Official Google Workspace OAuth Connect */}
           <div className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-3.5 py-2 flex-1">
             <div className="min-w-0">

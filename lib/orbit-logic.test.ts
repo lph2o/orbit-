@@ -12,6 +12,7 @@ import {
   computeNextRunAt,
   computeWorkspaceAnalytics,
   createDefaultEventTriggers,
+  createDefaultFreeApiProviders,
   executeVmTerminalCommand,
   extractCleanVmSearchQuery,
   extractNotionPageId,
@@ -21,13 +22,16 @@ import {
   getAgentAutonomyBadge,
   getAgentModelDisplayName,
   getAgentToneLabel,
+  getProviderHealthyKeyCount,
   getRemainingVmSeconds,
   isContinuationInput,
   isGoogleWorkspaceTool,
   isNotionPageCreationIntent,
   isRoutineDue,
+  maskApiKeyDisplay,
   parseCsvDocumentContent,
   resolveMultiTurnPrompt,
+  resolveProviderForModel,
   retrieveRelevantKnowledgeChunks,
   sanitizeHallucinatedUrls,
   shouldAutoPauseVm,
@@ -569,6 +573,180 @@ test('All 12 integrations have credential specs, connection readiness evaluation
   assert.equal(detectDirectToolActionIntent('Ajoute une tâche ClickUp urgente')?.slug, 'clickup');
   assert.equal(detectDirectToolActionIntent('Publie une annonce sur Discord')?.slug, 'discord');
 });
+
+test('Free Agent API Providers catalog starts with 0 fake keys, 0 healthy count, and sanitizes legacy fake keys', async () => {
+  const { sanitizePersistedFreeApiProviders } = await import('./orbit-logic');
+  const providers = createDefaultFreeApiProviders();
+  assert.equal(providers.length, 9);
+  assert.deepEqual(
+    providers.map((p) => p.name),
+    [
+      'Google AI Studio',
+      'Groq',
+      'Router9 (shared monthly credits)',
+      'Speechify (monthly free TTS characters)',
+      'B.AI (promotional free model)',
+      'NVIDIA NIM',
+      'OpenRouter',
+      'HuggingFace Router',
+      'OrcaRouter (free key)',
+    ]
+  );
+
+  // Zero fake keys and zero fake 'sain' status when nothing is connected
+  for (const prov of providers) {
+    assert.equal(prov.isEnabled, false);
+    assert.equal(prov.keys.length, 0);
+    assert.equal(getProviderHealthyKeyCount(prov), 0);
+  }
+
+  // Sanitizer strips any legacy fake keys from localStorage
+  const polluted = [
+    {
+      ...providers[0],
+      isEnabled: true,
+      keys: [
+        {
+          keyId: 'key_gais_1',
+          maskedKey: 'AQ...ckaw',
+          rawKey: 'AQ_orbit_shared_google_ai_studio_ckaw',
+          isEnabled: true,
+          isHealthy: true,
+          statusText: 'sain' as const,
+          checkedAtTime: '12:55',
+        },
+      ],
+    },
+  ];
+  const cleaned = sanitizePersistedFreeApiProviders(polluted);
+  assert.equal(cleaned[0].keys.length, 0);
+  assert.equal(cleaned[0].isEnabled, false);
+  assert.equal(getProviderHealthyKeyCount(cleaned[0]), 0);
+
+  assert.equal(maskApiKeyDisplay('AIzaSyRealUserKey1234567890ckaw'), 'AI...ckaw');
+  assert.equal(resolveProviderForModel('groq/llama-3.3-70b-versatile'), 'groq');
+  assert.equal(resolveProviderForModel('openrouter/deepseek-r1-free'), 'openrouter');
+  assert.equal(getAgentModelDisplayName('groq/llama-3.3-70b-versatile'), 'Groq · Llama 3.3 70B');
+});
+
+test('Chat slash command autocomplete, expansion, history filtering, and Markdown table parser work accurately', async () => {
+  const {
+    getMatchingSlashCommands,
+    expandSlashCommandInput,
+    filterChatMessages,
+    parseMarkdownTableLines,
+  } = await import('./orbit-logic');
+
+  assert.equal(getMatchingSlashCommands('/').length, 7);
+  assert.equal(getMatchingSlashCommands('/no')[0]?.command, '/notion');
+  assert.equal(getMatchingSlashCommands('bonjour').length, 0);
+
+  const vmExpanded = expandSlashCommandInput('/vm Intelligence Artificielle');
+  assert.equal(vmExpanded.isClearCommand, false);
+  assert.match(vmExpanded.expandedPrompt, /Cloud VM.*Intelligence Artificielle/);
+
+  const clearExpanded = expandSlashCommandInput('/clear');
+  assert.equal(clearExpanded.isClearCommand, true);
+
+  const sampleMsgs = [
+    {
+      messageId: 'm1',
+      agentId: 'a1',
+      ownerId: 'u1',
+      role: 'user' as const,
+      content: 'Utilise @github pour analyser les PRs',
+      responseType: 'message' as const,
+      timeLabel: '10:00',
+      createdAt: '2026-10-30T10:00:00Z',
+    },
+    {
+      messageId: 'm2',
+      agentId: 'a1',
+      ownerId: 'u1',
+      role: 'agent' as const,
+      content: 'Routine quotidienne configurée',
+      responseType: 'routine' as const,
+      timeLabel: '10:01',
+      createdAt: '2026-10-30T10:01:00Z',
+    },
+  ];
+
+  assert.equal(filterChatMessages(sampleMsgs, '', 'tools').length, 1);
+  assert.equal(filterChatMessages(sampleMsgs, '', 'routines').length, 1);
+  assert.equal(filterChatMessages(sampleMsgs, 'quotidienne', 'all').length, 1);
+
+  const parsedTable = parseMarkdownTableLines([
+    '| Outil | Statut |',
+    '| --- | --- |',
+    '| GitHub | Actif |',
+    '| Notion | Vérifié |',
+  ]);
+  assert.deepEqual(parsedTable?.headers, ['Outil', 'Statut']);
+  assert.equal(parsedTable?.rows.length, 2);
+
+  const {
+    buildContextualFollowUpSuggestions,
+    buildEmptyChatStarterCards,
+  } = await import('./orbit-logic');
+  const followUps = buildContextualFollowUpSuggestions(
+    { name: 'Mickey', tools: ['github'] },
+    'vm_action',
+    'Résultats Google News'
+  );
+  assert.equal(followUps.length, 3);
+  assert.equal(buildEmptyChatStarterCards({ name: 'Mickey', tools: [] }).length, 4);
+});
+
+test('Gmail cleanup/unsubscribe intent and immediate execution follow-up work without generic 08:00 AM fallback', async () => {
+  const {
+    isGmailCleanupOrUnsubscribeIntent,
+    resolveMultiTurnPrompt,
+    analyzeUserPromptFallback,
+    detectDirectToolActionIntent,
+  } = await import('./orbit-logic');
+
+  const prompt1 =
+    "ma boite mail est presque pleine, je veux que tu me supprime l'ensemble des mails inutile, et me desinscrire aux couriers maintenant";
+  const prompt2 = 'je souhaite executé la tache tout de suite non à 8:00 heure';
+
+  assert.equal(isGmailCleanupOrUnsubscribeIntent(prompt1), true);
+  assert.equal(detectDirectToolActionIntent(prompt1)?.slug, 'gmail');
+
+  // Follow-up insisting on immediate execution resolves with the preceding Gmail prompt
+  const history = [
+    { role: 'user', content: prompt1 },
+    { role: 'agent', content: 'Connexion requise' },
+  ];
+  assert.equal(isGmailCleanupOrUnsubscribeIntent(prompt2, history), true);
+  const resolved = resolveMultiTurnPrompt(prompt2, history);
+  assert.equal(resolved.includes('ma boite mail est presque pleine'), true);
+
+  // Fallback for Gmail agent without OAuth token asks for real OAuth and NEVER claims "Votre instruction a été traitée... tous les jours à 08:00"
+  const gmailAgent = {
+    ...sampleAgent,
+    name: 'alpha',
+    tools: ['gmail'],
+  };
+  const fallbackRes1 = analyzeUserPromptFallback(prompt1, gmailAgent, 'Europe/Paris', null, 'fr');
+  assert.equal(fallbackRes1.type, 'tool_connection');
+  assert.equal(fallbackRes1.message.includes('Votre instruction a été traitée'), false);
+  assert.equal(fallbackRes1.message.includes('08:00 sur #new-channel'), false);
+  assert.equal(fallbackRes1.suggestedTools?.[0]?.slug, 'gmail');
+
+  const fallbackRes2 = analyzeUserPromptFallback(
+    prompt2,
+    gmailAgent,
+    'Europe/Paris',
+    null,
+    'fr',
+    [],
+    history
+  );
+  assert.equal(fallbackRes2.type, 'tool_connection');
+  assert.equal(fallbackRes2.message.includes('Votre instruction a été traitée'), false);
+  assert.equal(fallbackRes2.suggestedTools?.[0]?.slug, 'gmail');
+});
+
 
 
 

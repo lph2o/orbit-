@@ -9,9 +9,9 @@ export default function WorkspaceLayout({
 }) {
   return (
     <WorkspaceAuthGate>
-      <div className="flex h-screen w-screen overflow-hidden bg-white text-slate-900">
+      <div className="flex flex-col lg:flex-row h-[100dvh] w-full overflow-hidden bg-white text-slate-900">
         <AppSidebar />
-        <main className="flex-1 min-w-0 h-screen overflow-y-auto">{children}</main>
+        <main className="flex-1 min-w-0 min-h-0 h-full overflow-y-auto">{children}</main>
       </div>
     </WorkspaceAuthGate>
   );

@@ -5,11 +5,14 @@ import {
   createLiveGoogleSheet,
   createLiveNotionPage,
   executeLiveToolAction,
+  executeLiveUnsubscribeBatch,
   fetchLiveCalendarEvents,
   fetchLiveGitHubRepoActivity,
   fetchLiveGmailMessages,
   postToSlackWebhook,
+  scanLiveGmailCleanupCandidates,
   sendLiveGmailEmail,
+  trashLiveGmailMessages,
   verifyLiveToolCredentials,
   verifyNotionTokenAndFindParent,
 } from '@/lib/workspace-server';
@@ -62,6 +65,8 @@ export async function POST(req: NextRequest) {
       emailTo,
       emailSubject,
       emailBody,
+      messageIds,
+      unsubscribeUrls,
       githubRepo,
       githubToken,
       notionToken,
@@ -80,6 +85,9 @@ export async function POST(req: NextRequest) {
         | 'post_slack'
         | 'send_gmail'
         | 'create_gmail_draft'
+        | 'scan_gmail_cleanup'
+        | 'trash_gmail_messages'
+        | 'auto_unsubscribe_gmail'
         | 'fetch_github'
         | 'verify_notion'
         | 'verify_tool'
@@ -93,6 +101,8 @@ export async function POST(req: NextRequest) {
       emailTo?: string;
       emailSubject?: string;
       emailBody?: string;
+      messageIds?: string[];
+      unsubscribeUrls?: string[];
       githubRepo?: string;
       githubToken?: string;
       notionToken?: string;
@@ -183,12 +193,59 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(notionResult);
     }
 
+    if (action === 'auto_unsubscribe_gmail') {
+      if (Array.isArray(unsubscribeUrls) && unsubscribeUrls.length > 0) {
+        const res = await executeLiveUnsubscribeBatch(unsubscribeUrls);
+        return NextResponse.json({
+          unsubscribedCount: res.succeededUrls.length,
+          succeededUrls: res.succeededUrls,
+          failedCount: res.failedCount,
+        });
+      }
+      const tokenForUnsub = req.headers.get('Authorization');
+      if (!tokenForUnsub) {
+        return NextResponse.json(
+          { error: 'Missing Google Workspace OAuth Bearer token or unsubscribeUrls.' },
+          { status: 401 }
+        );
+      }
+      const candidates = await scanLiveGmailCleanupCandidates(tokenForUnsub, 20);
+      const urls = candidates
+        .map((c) => c.unsubscribeUrl || '')
+        .filter(Boolean);
+      const res = await executeLiveUnsubscribeBatch(urls);
+      return NextResponse.json({
+        unsubscribedCount: res.succeededUrls.length,
+        succeededUrls: res.succeededUrls,
+        failedCount: res.failedCount,
+      });
+    }
+
     const token = req.headers.get('Authorization');
     if (!token) {
       return NextResponse.json(
         { error: 'Missing Google Workspace OAuth Bearer token.' },
         { status: 401 }
       );
+    }
+
+    if (action === 'scan_gmail_cleanup') {
+      const candidates = await scanLiveGmailCleanupCandidates(token, 20);
+      return NextResponse.json({
+        candidates,
+        scannedAt: new Date().toISOString(),
+      });
+    }
+
+    if (action === 'trash_gmail_messages') {
+      if (!Array.isArray(messageIds) || messageIds.length === 0) {
+        return NextResponse.json(
+          { error: 'Aucun e-mail sélectionné pour la mise à la corbeille.' },
+          { status: 400 }
+        );
+      }
+      const result = await trashLiveGmailMessages(token, messageIds);
+      return NextResponse.json(result);
     }
 
     if (action === 'send_gmail') {

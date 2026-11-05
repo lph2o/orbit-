@@ -20,6 +20,7 @@ export const SCOPES = [
   'https://www.googleapis.com/auth/gmail.readonly',
   'https://www.googleapis.com/auth/gmail.send',
   'https://www.googleapis.com/auth/gmail.compose',
+  'https://www.googleapis.com/auth/gmail.modify',
   'https://www.googleapis.com/auth/calendar.readonly',
   'https://www.googleapis.com/auth/documents',
   'https://www.googleapis.com/auth/spreadsheets',
@@ -30,16 +31,56 @@ SCOPES.forEach((scope) => {
   googleAuthProvider.addScope(scope);
 });
 
-// In-memory cache for Google Workspace OAuth access token (never stored in localStorage/sessionStorage)
+// Session cache for Google Workspace OAuth access token (55-minute TTL so page reloads preserve active token)
+const WORKSPACE_TOKEN_SESSION_KEY = 'orbit_workspace_oauth_token_v1';
+const WORKSPACE_TOKEN_EXPIRY_KEY = 'orbit_workspace_oauth_expiry_v1';
 let isSigningIn = false;
 let cachedAccessToken: string | null = null;
 
+function readSessionToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const token = window.sessionStorage.getItem(WORKSPACE_TOKEN_SESSION_KEY);
+    const expiry = Number(
+      window.sessionStorage.getItem(WORKSPACE_TOKEN_EXPIRY_KEY) || '0'
+    );
+    if (token && expiry > Date.now()) {
+      return token;
+    }
+    window.sessionStorage.removeItem(WORKSPACE_TOKEN_SESSION_KEY);
+    window.sessionStorage.removeItem(WORKSPACE_TOKEN_EXPIRY_KEY);
+  } catch {
+    // Ignore storage error
+  }
+  return null;
+}
+
 export function getAccessToken(): string | null {
+  if (cachedAccessToken) return cachedAccessToken;
+  const fromSession = readSessionToken();
+  if (fromSession) {
+    cachedAccessToken = fromSession;
+  }
   return cachedAccessToken;
 }
 
 export function setCachedAccessToken(token: string | null): void {
   cachedAccessToken = token;
+  if (typeof window === 'undefined') return;
+  try {
+    if (token) {
+      window.sessionStorage.setItem(WORKSPACE_TOKEN_SESSION_KEY, token);
+      window.sessionStorage.setItem(
+        WORKSPACE_TOKEN_EXPIRY_KEY,
+        String(Date.now() + 55 * 60 * 1000)
+      );
+    } else {
+      window.sessionStorage.removeItem(WORKSPACE_TOKEN_SESSION_KEY);
+      window.sessionStorage.removeItem(WORKSPACE_TOKEN_EXPIRY_KEY);
+    }
+  } catch {
+    // Ignore storage error
+  }
 }
 
 export function initWorkspaceAuthListener(
@@ -47,10 +88,10 @@ export function initWorkspaceAuthListener(
 ) {
   return onAuthStateChanged(auth, (fbUser: User | null) => {
     if (!fbUser) {
-      cachedAccessToken = null;
+      setCachedAccessToken(null);
       onTokenChange?.(null, null);
     } else if (!isSigningIn) {
-      onTokenChange?.(cachedAccessToken, fbUser);
+      onTokenChange?.(getAccessToken(), fbUser);
     }
   });
 }
@@ -63,8 +104,9 @@ export async function googleSignInWithWorkspaceScopes(): Promise<{
     isSigningIn = true;
     const result = await signInWithPopup(auth, googleAuthProvider);
     const credential = GoogleAuthProvider.credentialFromResult(result);
-    cachedAccessToken = credential?.accessToken || null;
-    return { user: result.user, accessToken: cachedAccessToken };
+    const token = credential?.accessToken || null;
+    setCachedAccessToken(token);
+    return { user: result.user, accessToken: token };
   } finally {
     isSigningIn = false;
   }

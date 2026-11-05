@@ -7,11 +7,14 @@ import {
   detectDirectToolActionIntent,
   evaluateToolConnectionReadiness,
   extractRequestedPageTitle,
+  getAgentModelDisplayName,
   getToolCredentialSpec,
   isContinuationInput,
+  isGmailCleanupOrUnsubscribeIntent,
   isNotionPageCreationIntent,
   mapToolSlugsToSuggestions,
   resolveMultiTurnPrompt,
+  resolveProviderForModel,
   retrieveRelevantKnowledgeChunks,
   sanitizeHallucinatedUrls,
   TOOL_CATALOG,
@@ -21,20 +24,24 @@ import {
   createLiveGoogleDoc,
   createLiveNotionPage,
   executeLiveToolAction,
+  executeLiveUnsubscribeBatch,
   postToSlackWebhook,
+  scanLiveGmailCleanupCandidates,
+  trashLiveGmailMessages,
 } from '@/lib/workspace-server';
 import { Locale } from '@/lib/i18n';
 import {
   AgentConfig,
   AgentRoutine,
   AgentStructuredResponse,
+  FreeAgentApiProvider,
   KnowledgeDocument,
   RoutineFrequency,
 } from '@/lib/types';
 
-function getGenAIClient(): GoogleGenAI | null {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey || apiKey === 'MY_GEMINI_API_KEY' || apiKey.trim() === '') {
+function getGenAIClient(customKey?: string): GoogleGenAI | null {
+  const apiKey = (customKey || process.env.GEMINI_API_KEY || '').trim();
+  if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
     return null;
   }
   return new GoogleGenAI({
@@ -48,6 +55,7 @@ function getGenAIClient(): GoogleGenAI | null {
 }
 
 export async function POST(req: NextRequest) {
+  const startedAtMs = Date.now();
   let parsedBody: {
     agent?: AgentConfig;
     messages?: { role: string; content: string }[];
@@ -58,7 +66,9 @@ export async function POST(req: NextRequest) {
     notionToken?: string;
     notionParentId?: string;
     toolCredentials?: Record<string, ToolCredentialRecord>;
+    freeApiProviders?: FreeAgentApiProvider[];
     workspaceToken?: string | null;
+    attachedFileName?: string;
   } = {};
 
   try {
@@ -73,7 +83,9 @@ export async function POST(req: NextRequest) {
       notionToken = '',
       notionParentId = '',
       toolCredentials = {},
+      freeApiProviders = [],
       workspaceToken = null,
+      attachedFileName,
     } = parsedBody;
 
     if (!agent || !Array.isArray(messages) || messages.length === 0) {
@@ -98,6 +110,23 @@ export async function POST(req: NextRequest) {
           ? 'Italian (Italiano)'
           : 'English';
 
+    const relevantDocsForTrace = retrieveRelevantKnowledgeChunks(
+      knowledgeDocs,
+      effectiveUserPrompt,
+      3
+    );
+    const buildExecMeta = (
+      modelLabel: string,
+      httpCalls: string[] = []
+    ) => ({
+      modelUsed: modelLabel,
+      providerId: resolveProviderForModel(agent.model),
+      latencyMs: Math.max(1, Date.now() - startedAtMs),
+      ragDocsCited: relevantDocsForTrace.map((d) => d.name),
+      httpCalls,
+      attachedFileName,
+    });
+
     const deterministicResult = analyzeUserPromptFallback(
       latestUserMessage,
       agent,
@@ -106,6 +135,9 @@ export async function POST(req: NextRequest) {
       effectiveLocale,
       knowledgeDocs,
       messages
+    );
+    deterministicResult.executionMeta = buildExecMeta(
+      getAgentModelDisplayName(agent.model)
     );
 
     const effectiveNotionToken = (
@@ -206,6 +238,165 @@ export async function POST(req: NextRequest) {
         suggestedTools: mapToolSlugsToSuggestions(['notion'], agent.tools, undefined, effectiveLocale),
       };
       return NextResponse.json({ response: noTokenResponse });
+    }
+
+    // 1B. Real Gmail Inbox Cleanup & Unsubscribe Scanner / Immediate Trash & RFC 8058 Unsubscribe Execution
+    const priorScanInHistory = messages
+      .slice(0, -1)
+      .some((m) => (m.content || '').includes('Scan en direct de votre boîte Gmail terminé'));
+    const lowerLatest = latestUserMessage.toLowerCase();
+    const lowerEffective = effectiveUserPrompt.toLowerCase();
+    const isExplicitGmailConfirmOrImmediateDelete =
+      lowerLatest.includes('scan en direct de votre boîte gmail terminé') ||
+      lowerLatest.includes('nettoyage gmail exécuté en direct') ||
+      lowerLatest.includes('confirmer la mise à la corbeille') ||
+      /(supprim|corbeille|effac|nettoi|nettoy|trash|delete|vide|désinscri|desinscri|désabonn|desabonn)/i.test(
+        lowerEffective
+      ) ||
+      (priorScanInHistory &&
+        (lowerLatest.includes('confirme') ||
+          lowerLatest.includes('oui') ||
+          lowerLatest.includes('supprime') ||
+          lowerLatest.includes('corbeille') ||
+          lowerLatest.includes('tout de suite') ||
+          lowerLatest.includes('maintenant')));
+
+    if (
+      isExplicitGmailConfirmOrImmediateDelete ||
+      isGmailCleanupOrUnsubscribeIntent(effectiveUserPrompt, messages)
+    ) {
+      const activeGoogleToken = (
+        workspaceToken ||
+        toolCredentials.gmail?.apiToken ||
+        ''
+      ).trim();
+
+      if (!activeGoogleToken) {
+        return NextResponse.json({
+          response: deterministicResult,
+        });
+      }
+
+      try {
+        const candidates = await scanLiveGmailCleanupCandidates(
+          activeGoogleToken,
+          15
+        );
+        const unsubUrlsFromCandidates = candidates
+          .map((c) => c.unsubscribeUrl || '')
+          .filter(Boolean);
+        // Also extract any unsubscribe URLs present in the user's pasted message
+        const pastedUrls = Array.from(
+          latestUserMessage.matchAll(/\]\((https?:\/\/[^\s)]+)\)/g)
+        ).map((m) => m[1]);
+        const allUnsubUrls = Array.from(
+          new Set([...unsubUrlsFromCandidates, ...pastedUrls])
+        );
+
+        const unsubCount = candidates.filter(
+          (c) => Boolean(c.unsubscribeUrl || c.unsubscribeMailto)
+        ).length;
+
+        const candidateBullets = candidates
+          .map((c, idx) => {
+            const unsubLink =
+              c.unsubscribeUrl ||
+              (c.unsubscribeMailto ? `mailto:${c.unsubscribeMailto}` : null);
+            return (
+              `${idx + 1}. **${c.subject}** — *${c.from}*` +
+              (unsubLink ? ` · [Se désabonner en 1 clic](${unsubLink})` : '')
+            );
+          })
+          .join('\n');
+
+        // Execute trashLiveGmailMessages AND automatic RFC 8058 HTTP unsubscriptions immediately!
+        if (
+          isExplicitGmailConfirmOrImmediateDelete &&
+          (candidates.length > 0 || allUnsubUrls.length > 0)
+        ) {
+          const [trashRes, unsubRes] = await Promise.all([
+            candidates.length > 0
+              ? trashLiveGmailMessages(
+                  activeGoogleToken,
+                  candidates.map((c) => c.id)
+                )
+              : Promise.resolve({ trashedIds: [], trashedCount: 0, failedCount: 0 }),
+            allUnsubUrls.length > 0
+              ? executeLiveUnsubscribeBatch(allUnsubUrls)
+              : Promise.resolve({ succeededUrls: [], failedCount: 0 }),
+          ]);
+
+          const confirmedMsg =
+            `✅ **Nettoyage & Désabonnement Gmail exécutés en direct (\`POST /gmail/v1/users/me/messages/{id}/trash\` + \`RFC 8058 One-Click Unsubscribe\`) !**\n\n` +
+            `• **Courriers inutiles déplacés dans la corbeille Gmail** : **${trashRes.trashedIds.length} / ${candidates.length} e-mail(s)**\n` +
+            `• **Désinscriptions automatiques exécutées en direct (HTTP POST/GET)** : **${unsubRes.succeededUrls.length} / ${allUnsubUrls.length} expéditeur(s)**\n\n` +
+            (candidateBullets
+              ? `### Courriers traités & Liens de désinscription vérifiés :\n${candidateBullets}`
+              : '');
+
+          return NextResponse.json({
+            response: {
+              type: 'message',
+              message: confirmedMsg,
+              gmailCleanupProposal: {
+                scannedQuery:
+                  'category:promotions OR category:social OR unsubscribe OR newsletter',
+                scannedAt: new Date().toISOString(),
+                candidates,
+              },
+              executionMeta: buildExecMeta(getAgentModelDisplayName(agent.model), [
+                `GET gmail.googleapis.com/gmail/v1/users/me/messages → HTTP 200`,
+                `POST gmail.googleapis.com/gmail/v1/users/me/messages/trash (${trashRes.trashedIds.length} trashed) → HTTP 200`,
+                `POST RFC-8058 List-Unsubscribe (${unsubRes.succeededUrls.length}/${allUnsubUrls.length} unsubscribed)`,
+              ]),
+            },
+          });
+        }
+
+        const msgFr =
+          candidates.length > 0
+            ? `✅ **Scan en direct de votre boîte Gmail terminé (\`GET /gmail/v1/users/me/messages\`) !**\n\n` +
+              `• **E-mails promotionnels / newsletters détectés** : **${candidates.length} courriers**\n` +
+              `• **Liens officiels de désinscription (\`List-Unsubscribe\`) extraits** : **${unsubCount}**\n\n` +
+              `${candidateBullets}\n\n` +
+              `👉 Cliquez sur **"Se désabonner"** en face de chaque expéditeur ou sur **"Confirmer la mise à la corbeille"** ci-dessous pour les supprimer **tout de suite** :`
+            : `✅ **Scan en direct de votre boîte Gmail terminé** : Aucun courrier promotionnel ou newsletter inutile n'a été trouvé dans votre boîte de réception actuelle.`;
+
+        return NextResponse.json({
+          response: {
+            type: 'message',
+            message: msgFr,
+            gmailCleanupProposal: {
+              scannedQuery:
+                'category:promotions OR category:social OR unsubscribe OR newsletter',
+              scannedAt: new Date().toISOString(),
+              candidates,
+            },
+            executionMeta: buildExecMeta(getAgentModelDisplayName(agent.model), [
+              'GET gmail.googleapis.com/gmail/v1/users/me/messages → HTTP 200',
+            ]),
+          },
+        });
+      } catch (gmailErr) {
+        return NextResponse.json({
+          response: {
+            type: 'tool_connection',
+            message:
+              `⚠️ **L'API officielle Gmail a refusé l'accès lors du scan en direct** :\n` +
+              `\`${gmailErr instanceof Error ? gmailErr.message : 'Erreur OAuth Gmail'}\`\n\n` +
+              `👉 Cliquez sur **Vérifier API / OAuth** dans la carte **Gmail** ci-dessous pour actualiser votre jeton Google Workspace et relancer le nettoyage immédiat :`,
+            suggestedTools: mapToolSlugsToSuggestions(
+              ['gmail'],
+              agent.tools,
+              undefined,
+              effectiveLocale
+            ),
+            executionMeta: buildExecMeta(getAgentModelDisplayName(agent.model), [
+              'GET gmail.googleapis.com/gmail/v1/users/me/messages → HTTP 401/403',
+            ]),
+          },
+        });
+      }
     }
 
     // 2. Universal Write / Action Intent Guard across ALL other tools (Google Docs, Slack, Discord, Linear, ClickUp, Outlook, Gmail, Google Calendar, GitHub)
@@ -320,7 +511,124 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ response: deterministicResult });
     }
 
-    const ai = getGenAIClient();
+    const targetProviderId = resolveProviderForModel(agent.model);
+    const providerEntry = freeApiProviders.find((p) => p.providerId === targetProviderId);
+    const verifiedProviderKey = providerEntry?.isEnabled
+      ? providerEntry.keys.find((k) => k.isEnabled && k.isHealthy && k.rawKey.trim().length > 0)
+      : undefined;
+
+    // 3. Honest Guard & Real External API Execution when a non-Gemini external provider is selected (Groq, OpenRouter, HuggingFace, NVIDIA NIM, Router9, Speechify, B.AI, OrcaRouter)
+    if (targetProviderId !== 'google_ai_studio') {
+      const modelDisplayName = getAgentModelDisplayName(agent.model);
+      if (!verifiedProviderKey) {
+        return NextResponse.json({
+          response: {
+            type: 'message',
+            message:
+              effectiveLocale === 'fr'
+                ? `⚠️ **Transparence totale : aucune clé API vérifiée ("sain") n'est connectée pour le moteur externe \`${modelDisplayName}\`.**\n\n` +
+                  `Je refuse de simuler une fausse réponse. Pour utiliser **${modelDisplayName}** :\n` +
+                  `1. Cliquez sur le bouton **APIs Gratuites** en haut du chat (ou dans l'onglet **Réglages → Gérer APIs**).\n` +
+                  `2. Ajoutez et vérifiez votre vraie clé API **${providerEntry?.name || targetProviderId}**.\n` +
+                  `3. Ou repassez le modèle de l'agent sur **Gemini 3 Flash** dans l'onglet **Réglages**.`
+                : `⚠️ **No verified API key is connected for external engine \`${modelDisplayName}\`.**\n\nPlease connect and verify your real **${providerEntry?.name || targetProviderId}** API key in **Free APIs**, or switch back to **Gemini 3 Flash** in Settings.`,
+          },
+        });
+      }
+
+      // Execute real live completion against the external provider's official API
+      const endpointByProvider: Record<string, { url: string; model: string }> = {
+        groq: {
+          url: 'https://api.groq.com/openai/v1/chat/completions',
+          model: 'llama-3.3-70b-versatile',
+        },
+        openrouter: {
+          url: 'https://openrouter.ai/api/v1/chat/completions',
+          model: 'deepseek/deepseek-r1:free',
+        },
+        huggingface_router: {
+          url: 'https://router.huggingface.co/v1/chat/completions',
+          model: 'Qwen/Qwen2.5-72B-Instruct',
+        },
+        nvidia_nim: {
+          url: 'https://integrate.api.nvidia.com/v1/chat/completions',
+          model: 'meta/llama-3.1-405b-instruct',
+        },
+        router9: {
+          url: 'https://api.router9.ai/v1/chat/completions',
+          model: 'gpt-4o-mini',
+        },
+        bai_promo: {
+          url: 'https://api.together.xyz/v1/chat/completions',
+          model: 'meta-llama/Llama-3.3-70B-Instruct-Turbo',
+        },
+        orcarouter: {
+          url: 'https://openrouter.ai/api/v1/chat/completions',
+          model: 'meta-llama/llama-3.3-70b-instruct:free',
+        },
+      };
+
+      const extTarget = endpointByProvider[targetProviderId];
+      if (extTarget) {
+        try {
+          const extRes = await fetch(extTarget.url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${verifiedProviderKey.rawKey.trim()}`,
+            },
+            body: JSON.stringify({
+              model: extTarget.model,
+              messages: [
+                {
+                  role: 'system',
+                  content: `You are ${agent.name}. Respond in ${langName}. ${agent.description || ''}`,
+                },
+                ...messages.slice(-8).map((m) => ({
+                  role: m.role === 'agent' ? 'assistant' : 'user',
+                  content: m.content,
+                })),
+              ],
+              temperature:
+                typeof agent.temperature === 'number'
+                  ? Math.max(0, Math.min(1, agent.temperature))
+                  : 0.3,
+            }),
+            signal: AbortSignal.timeout(15000),
+          });
+
+          if (!extRes.ok) {
+            const errBody = await extRes.text().catch(() => '');
+            return NextResponse.json({
+              response: {
+                type: 'message',
+                message: `⚠️ **Erreur HTTP ${extRes.status} renvoyée par l'API officielle ${providerEntry?.name || targetProviderId}** :\n\`${errBody.slice(0, 240) || extRes.statusText}\`\n\nVérifiez votre clé API ou vos crédits dans **APIs Gratuites**.`,
+              },
+            });
+          }
+
+          const extData = await extRes.json();
+          const replyContent =
+            extData?.choices?.[0]?.message?.content ||
+            'Réponse reçue du fournisseur externe.';
+          return NextResponse.json({
+            response: {
+              type: 'message',
+              message: sanitizeHallucinatedUrls(replyContent, [], publicPortfolioPath),
+            },
+          });
+        } catch (extErr) {
+          return NextResponse.json({
+            response: {
+              type: 'message',
+              message: `⚠️ **Échec de connexion réseau à ${providerEntry?.name || targetProviderId}** : \`${extErr instanceof Error ? extErr.message : 'fetch failed'}\`.`,
+            },
+          });
+        }
+      }
+    }
+
+    const ai = getGenAIClient(verifiedProviderKey?.rawKey);
     if (!ai) {
       return NextResponse.json({ response: deterministicResult });
     }
@@ -464,12 +772,17 @@ Behavior Rules:
       return NextResponse.json({ response: deterministicResult });
     }
 
+    const execMeta = buildExecMeta(getAgentModelDisplayName(agent.model), [
+      `POST generativelanguage.googleapis.com/v1beta/models/${selectedModel}:generateContent → HTTP 200`,
+    ]);
+
     if (responseType === 'vm_action') {
       const trace = buildVmActionTrace(effectiveUserPrompt, locale);
       const structured: AgentStructuredResponse = {
         type: 'vm_action',
         message: parsed.message || deterministicResult.message,
         vmTrace: trace,
+        executionMeta: execMeta,
       };
       return NextResponse.json({ response: structured });
     }
@@ -484,6 +797,7 @@ Behavior Rules:
         type: 'tool_connection',
         message: parsed.message,
         suggestedTools: suggestions,
+        executionMeta: execMeta,
       };
       return NextResponse.json({ response: structured });
     }
@@ -508,6 +822,7 @@ Behavior Rules:
                 ? deterministicResult.message
                 : parsed.message,
             suggestedTools: mapToolSlugsToSuggestions(toolSlugs, agent.tools, undefined, locale),
+            executionMeta: execMeta,
           },
         });
       }
@@ -517,6 +832,7 @@ Behavior Rules:
         message: parsed.message,
         editingRoutineId: editingRoutine?.routineId,
         suggestedTools: mapToolSlugsToSuggestions(toolSlugs, agent.tools, undefined, locale),
+        executionMeta: execMeta,
         routine: {
           routineId: editingRoutine?.routineId,
           name:
@@ -562,6 +878,7 @@ Behavior Rules:
       type: responseType,
       message: parsed.message,
       question: parsed.question,
+      executionMeta: execMeta,
     };
     return NextResponse.json({ response: structured });
   } catch (error) {

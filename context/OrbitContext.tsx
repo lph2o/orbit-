@@ -42,6 +42,8 @@ import {
   AgentChatMessage,
   AgentConfig,
   AgentRoutine,
+  FreeAgentApiProvider,
+  FreeAgentApiProviderId,
   KnowledgeDocument,
   RoutineDraft,
   RoutineExecution,
@@ -54,9 +56,12 @@ import {
   buildVmActionTrace,
   computeNextRunAt,
   createDefaultEventTriggers,
+  createDefaultFreeApiProviders,
   filterThreeDayHistory,
   isRoutineDue,
+  maskApiKeyDisplay,
   sanitizeId,
+  sanitizePersistedFreeApiProviders,
   shouldAutoPauseVm,
   TOOL_CATALOG,
   ToolCredentialRecord,
@@ -134,6 +139,7 @@ interface OrbitContextValue {
         | 'isActive'
         | 'handoffTargetAgentId'
         | 'model'
+        | 'apiProviderId'
         | 'temperature'
         | 'tone'
         | 'outputFormat'
@@ -187,8 +193,18 @@ interface OrbitContextValue {
   setNotionParentId: (id: string) => void;
   toolCredentials: Record<string, ToolCredentialRecord>;
   setToolCredential: (slug: string, record: ToolCredentialRecord) => void;
+  freeApiProviders: FreeAgentApiProvider[];
+  toggleFreeApiProvider: (providerId: FreeAgentApiProviderId, isEnabled?: boolean) => void;
+  toggleFreeApiKey: (providerId: FreeAgentApiProviderId, keyId: string, isEnabled?: boolean) => void;
+  addOrUpdateFreeApiKey: (
+    providerId: FreeAgentApiProviderId,
+    rawKey: string,
+    keyId?: string
+  ) => Promise<void>;
+  deleteFreeApiKey: (providerId: FreeAgentApiProviderId, keyId: string) => void;
+  verifyFreeApiKeyHealth: (providerId: FreeAgentApiProviderId, keyId: string) => Promise<void>;
   addKnowledgeDocument: (agentId: string, docRecord: KnowledgeDocument) => void;
-  deleteKnowledgeDocument: (agentId: string, docId: string) => void;
+  deleteKnowledgeDocument: (agentId: string, docRecordId: string) => void;
   runMultiAgentWorkflow: (
     sourceAgentId: string,
     targetAgentId: string,
@@ -221,6 +237,7 @@ const STORAGE_KEYS = {
   NOTION_TOKEN: 'orbit_notion_token_v1',
   NOTION_PARENT: 'orbit_notion_parent_v1',
   TOOL_CREDENTIALS: 'orbit_tool_credentials_v1',
+  FREE_API_PROVIDERS: 'orbit_free_api_providers_v2_real',
 };
 
 const GUEST_USER: UserProfile = {
@@ -262,6 +279,9 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
   const [notionToken, setNotionTokenState] = useState<string>('');
   const [notionParentId, setNotionParentIdState] = useState<string>('');
   const [toolCredentials, setToolCredentialsState] = useState<Record<string, ToolCredentialRecord>>({});
+  const [freeApiProviders, setFreeApiProviders] = useState<FreeAgentApiProvider[]>(() =>
+    createDefaultFreeApiProviders()
+  );
   const [autoSchedulerEnabled, setAutoSchedulerEnabled] = useState<boolean>(true);
   const [lastSchedulerTick, setLastSchedulerTick] = useState<string>('');
   const [firestoreReady, setFirestoreReady] = useState<boolean>(false);
@@ -271,6 +291,7 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
     agentsRef.current = agents;
   }, [agents]);
 
+  const hasHydratedFromStorageRef = useRef<boolean>(false);
   const persistedAgentIdsRef = useRef<Set<string>>(new Set());
   const inFlightAgentSyncRef = useRef<Map<string, Promise<boolean>>>(new Map());
 
@@ -494,6 +515,274 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
     setToasts((prev) => prev.filter((item) => item.id !== id));
   }, []);
 
+  const toggleFreeApiProvider = useCallback(
+    (providerId: FreeAgentApiProviderId, isEnabled?: boolean) => {
+      setFreeApiProviders((prev) => {
+        const next = prev.map((p) =>
+          p.providerId === providerId
+            ? { ...p, isEnabled: isEnabled !== undefined ? isEnabled : !p.isEnabled }
+            : p
+        );
+        try {
+          localStorage.setItem(STORAGE_KEYS.FREE_API_PROVIDERS, JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+    },
+    []
+  );
+
+  const toggleFreeApiKey = useCallback(
+    (providerId: FreeAgentApiProviderId, keyId: string, isEnabled?: boolean) => {
+      setFreeApiProviders((prev) => {
+        const next = prev.map((p) => {
+          if (p.providerId !== providerId) return p;
+          return {
+            ...p,
+            keys: p.keys.map((k) =>
+              k.keyId === keyId
+                ? { ...k, isEnabled: isEnabled !== undefined ? isEnabled : !k.isEnabled }
+                : k
+            ),
+          };
+        });
+        try {
+          localStorage.setItem(STORAGE_KEYS.FREE_API_PROVIDERS, JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+    },
+    []
+  );
+
+  const addOrUpdateFreeApiKey = useCallback(
+    async (providerId: FreeAgentApiProviderId, rawKey: string, keyId?: string) => {
+      const cleanKey = rawKey.trim();
+      if (!cleanKey) return;
+      const targetKeyId = keyId || `key_${providerId}_${Date.now()}`;
+      const nowTime = new Date().toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+      const masked = maskApiKeyDisplay(cleanKey);
+
+      // 1. Insert/update in 'vérification' state (isHealthy: false) before real network verification
+      setFreeApiProviders((prev) => {
+        const next: FreeAgentApiProvider[] = prev.map((p) => {
+          if (p.providerId !== providerId) return p;
+          if (keyId) {
+            return {
+              ...p,
+              keys: p.keys.map((k) =>
+                k.keyId === keyId
+                  ? {
+                      ...k,
+                      rawKey: cleanKey,
+                      maskedKey: masked,
+                      isEnabled: true,
+                      isHealthy: false,
+                      statusText: 'vérification' as const,
+                      lastError: undefined,
+                      checkedAtTime: nowTime,
+                    }
+                  : k
+              ),
+            };
+          }
+          return {
+            ...p,
+            keys: [
+              ...p.keys,
+              {
+                keyId: targetKeyId,
+                rawKey: cleanKey,
+                maskedKey: masked,
+                isEnabled: true,
+                isHealthy: false,
+                statusText: 'vérification' as const,
+                lastError: undefined,
+                checkedAtTime: nowTime,
+              },
+            ],
+          };
+        });
+        return next;
+      });
+
+      // 2. Perform real live HTTP verification against the provider's official API
+      try {
+        const res = await fetch('/api/agent/providers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            providerId,
+            rawKey: cleanKey,
+          }),
+        });
+        const data = await res.json();
+        const isHealthy = Boolean(res.ok && data.healthy);
+        const checkedTime = data.checkedAtTime || nowTime;
+
+        setFreeApiProviders((prev) => {
+          const next: FreeAgentApiProvider[] = prev.map((p) => {
+            if (p.providerId !== providerId) return p;
+            const updatedKeys = p.keys.map((k) =>
+              k.keyId === targetKeyId
+                ? {
+                    ...k,
+                    isHealthy,
+                    statusText: (isHealthy ? 'sain' : 'erreur') as 'sain' | 'erreur',
+                    lastError: isHealthy ? undefined : data.errorDetail || 'fetch failed',
+                    checkedAtTime: checkedTime,
+                  }
+                : k
+            );
+            const hasHealthyKey = updatedKeys.some((k) => k.isEnabled && k.isHealthy);
+            return {
+              ...p,
+              isEnabled: hasHealthyKey,
+              keys: updatedKeys,
+            };
+          });
+          try {
+            localStorage.setItem(STORAGE_KEYS.FREE_API_PROVIDERS, JSON.stringify(next));
+          } catch {}
+          return next;
+        });
+
+        addToast({
+          title: isHealthy
+            ? `Clé API vérifiée en direct (sain)`
+            : `Clé API refusée (${data.errorDetail || 'fetch failed'})`,
+          description: isHealthy
+            ? `${data.modeLabel || providerId} · ${masked}`
+            : `Vérifiez que votre clé ${providerId} est valide et active.`,
+          type: isHealthy ? 'success' : 'error',
+        });
+      } catch {
+        setFreeApiProviders((prev) => {
+          const next: FreeAgentApiProvider[] = prev.map((p) => {
+            if (p.providerId !== providerId) return p;
+            return {
+              ...p,
+              isEnabled: false,
+              keys: p.keys.map((k) =>
+                k.keyId === targetKeyId
+                  ? {
+                      ...k,
+                      isHealthy: false,
+                      statusText: 'erreur' as const,
+                      lastError: 'fetch failed',
+                      checkedAtTime: nowTime,
+                    }
+                  : k
+              ),
+            };
+          });
+          try {
+            localStorage.setItem(STORAGE_KEYS.FREE_API_PROVIDERS, JSON.stringify(next));
+          } catch {}
+          return next;
+        });
+        addToast({
+          title: 'Échec de vérification réseau (fetch failed)',
+          type: 'error',
+        });
+      }
+    },
+    [addToast]
+  );
+
+  const deleteFreeApiKey = useCallback(
+    (providerId: FreeAgentApiProviderId, keyId: string) => {
+      setFreeApiProviders((prev) => {
+        const next: FreeAgentApiProvider[] = prev.map((p) => {
+          if (p.providerId !== providerId) return p;
+          const remainingKeys = p.keys.filter((k) => k.keyId !== keyId);
+          const hasHealthy = remainingKeys.some((k) => k.isEnabled && k.isHealthy);
+          return {
+            ...p,
+            isEnabled: hasHealthy ? p.isEnabled : false,
+            keys: remainingKeys,
+          };
+        });
+        try {
+          localStorage.setItem(STORAGE_KEYS.FREE_API_PROVIDERS, JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+    },
+    []
+  );
+
+  const verifyFreeApiKeyHealth = useCallback(
+    async (providerId: FreeAgentApiProviderId, keyId: string) => {
+      const provider = freeApiProviders.find((p) => p.providerId === providerId);
+      const keyEntry = provider?.keys.find((k) => k.keyId === keyId);
+      if (!provider || !keyEntry) return;
+
+      try {
+        const res = await fetch('/api/agent/providers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            providerId,
+            rawKey: keyEntry.rawKey,
+          }),
+        });
+        const data = await res.json();
+        const isHealthy = Boolean(res.ok && data.healthy);
+        const nowTime = new Date().toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+
+        setFreeApiProviders((prev) => {
+          const next: FreeAgentApiProvider[] = prev.map((p) => {
+            if (p.providerId !== providerId) return p;
+            const updatedKeys = p.keys.map((k) =>
+              k.keyId === keyId
+                ? {
+                    ...k,
+                    isHealthy,
+                    statusText: (isHealthy ? 'sain' : 'erreur') as 'sain' | 'erreur',
+                    lastError: isHealthy ? undefined : data.errorDetail || 'fetch failed',
+                    checkedAtTime: data.checkedAtTime || nowTime,
+                  }
+                : k
+            );
+            const hasHealthy = updatedKeys.some((k) => k.isEnabled && k.isHealthy);
+            return {
+              ...p,
+              isEnabled: hasHealthy ? p.isEnabled : false,
+              keys: updatedKeys,
+            };
+          });
+          try {
+            localStorage.setItem(STORAGE_KEYS.FREE_API_PROVIDERS, JSON.stringify(next));
+          } catch {}
+          return next;
+        });
+
+        addToast({
+          title: isHealthy
+            ? `${provider.name} · Clé opérationnelle (sain)`
+            : `${provider.name} · ${data.errorDetail || 'fetch failed'}`,
+          description: data.latencyMs
+            ? `Latence vérifiée : ${data.latencyMs}ms · ${data.modeLabel || ''}`
+            : undefined,
+          type: isHealthy ? 'success' : 'error',
+        });
+      } catch {
+        addToast({
+          title: `${provider.name} · fetch failed`,
+          type: 'error',
+        });
+      }
+    },
+    [freeApiProviders, addToast]
+  );
+
   const addKnowledgeDocument = useCallback(
     (agentId: string, docRecord: KnowledgeDocument) => {
       setKnowledgeByAgent((prev) => ({
@@ -536,136 +825,157 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
   // Load persisted state from localStorage on client mount
   useEffect(() => {
     testFirestoreConnection();
-    try {
-      const savedLocale = localStorage.getItem(STORAGE_KEYS.LOCALE);
-      if (savedLocale === 'fr' || savedLocale === 'it' || savedLocale === 'en') {
-        setLocaleState(savedLocale);
-      }
-      const savedSlackWebhook = localStorage.getItem(STORAGE_KEYS.SLACK_WEBHOOK);
-      if (savedSlackWebhook) {
-        setSlackWebhookUrlState(savedSlackWebhook);
-      }
-      const savedGhRepo = localStorage.getItem(STORAGE_KEYS.GITHUB_REPO);
-      if (savedGhRepo) setGithubRepoState(savedGhRepo);
-      const savedGhToken = localStorage.getItem(STORAGE_KEYS.GITHUB_TOKEN);
-      if (savedGhToken) setGithubTokenState(savedGhToken);
-      const savedNotionToken = localStorage.getItem(STORAGE_KEYS.NOTION_TOKEN);
-      if (savedNotionToken) setNotionTokenState(savedNotionToken);
-      const savedNotionParent = localStorage.getItem(STORAGE_KEYS.NOTION_PARENT);
-      if (savedNotionParent) setNotionParentIdState(savedNotionParent);
+    queueMicrotask(() => {
+      try {
+        const savedLocale = localStorage.getItem(STORAGE_KEYS.LOCALE);
+        if (savedLocale === 'fr' || savedLocale === 'it' || savedLocale === 'en') {
+          setLocaleState(savedLocale);
+        }
+        const savedSlackWebhook = localStorage.getItem(STORAGE_KEYS.SLACK_WEBHOOK);
+        if (savedSlackWebhook) {
+          setSlackWebhookUrlState(savedSlackWebhook);
+        }
+        const savedGhRepo = localStorage.getItem(STORAGE_KEYS.GITHUB_REPO);
+        if (savedGhRepo) setGithubRepoState(savedGhRepo);
+        const savedGhToken = localStorage.getItem(STORAGE_KEYS.GITHUB_TOKEN);
+        if (savedGhToken) setGithubTokenState(savedGhToken);
+        const savedNotionToken = localStorage.getItem(STORAGE_KEYS.NOTION_TOKEN);
+        if (savedNotionToken) setNotionTokenState(savedNotionToken);
+        const savedNotionParent = localStorage.getItem(STORAGE_KEYS.NOTION_PARENT);
+        if (savedNotionParent) setNotionParentIdState(savedNotionParent);
 
-      const savedToolCreds = localStorage.getItem(STORAGE_KEYS.TOOL_CREDENTIALS);
-      let initialCreds: Record<string, ToolCredentialRecord> = {};
-      if (savedToolCreds) {
+        const savedToolCreds = localStorage.getItem(STORAGE_KEYS.TOOL_CREDENTIALS);
+        let initialCreds: Record<string, ToolCredentialRecord> = {};
+        if (savedToolCreds) {
+          try {
+            initialCreds = JSON.parse(savedToolCreds) || {};
+          } catch {}
+        }
+        if (savedSlackWebhook) {
+          initialCreds.slack = { ...(initialCreds.slack || {}), webhookUrl: savedSlackWebhook };
+        }
+        if (savedGhRepo || savedGhToken) {
+          initialCreds.github = {
+            ...(initialCreds.github || {}),
+            targetParam: savedGhRepo || initialCreds.github?.targetParam || 'vercel/next.js',
+            apiToken: savedGhToken || initialCreds.github?.apiToken || '',
+          };
+        }
+        if (savedNotionToken || savedNotionParent) {
+          initialCreds.notion = {
+            ...(initialCreds.notion || {}),
+            apiToken: savedNotionToken || initialCreds.notion?.apiToken || '',
+            targetParam: savedNotionParent || initialCreds.notion?.targetParam || '',
+          };
+        }
+        setToolCredentialsState(initialCreds);
+
+        const savedAgents = localStorage.getItem(STORAGE_KEYS.AGENTS);
+        const savedRoutines = localStorage.getItem(STORAGE_KEYS.ROUTINES);
+        const savedExecutions = localStorage.getItem(STORAGE_KEYS.EXECUTIONS);
+        const savedMessages = localStorage.getItem(STORAGE_KEYS.MESSAGES);
+        const savedKnowledge = localStorage.getItem(STORAGE_KEYS.KNOWLEDGE);
+
+        if (savedAgents) {
+          const parsed = JSON.parse(savedAgents);
+          if (Array.isArray(parsed) && parsed.length > 0) setAgents(parsed);
+        } else {
+          const nowIso = new Date().toISOString();
+          setAgents((prev) =>
+            prev.map((ag) => (ag.vmStatus === 'active' ? { ...ag, vmLastActive: nowIso } : ag))
+          );
+        }
+        if (savedRoutines) {
+          const parsedRoutines: Record<string, AgentRoutine[]> = JSON.parse(savedRoutines);
+          const nowMs = Date.now();
+          const normalizedRoutines: Record<string, AgentRoutine[]> = {};
+          for (const [k, list] of Object.entries(parsedRoutines)) {
+            normalizedRoutines[k] = (list || []).map((r) => {
+              const nextMs = Date.parse(r.nextRunAt || '');
+              if (Number.isNaN(nextMs) || nextMs <= nowMs) {
+                return {
+                  ...r,
+                  nextRunAt: computeNextRunAt(r.frequency, r.time, r.days, new Date()),
+                };
+              }
+              return r;
+            });
+          }
+          setRoutinesByAgent(normalizedRoutines);
+        }
+        if (savedExecutions) {
+          const parsedExecs: Record<string, RoutineExecution[]> = JSON.parse(savedExecutions);
+          const cleanedExecs: Record<string, RoutineExecution[]> = {};
+          for (const [k, list] of Object.entries(parsedExecs)) {
+            cleanedExecs[k] = filterThreeDayHistory(list);
+          }
+          setExecutionsByAgent(cleanedExecs);
+        }
+        if (savedMessages) {
+          const parsedMsgs: Record<string, AgentChatMessage[]> = JSON.parse(savedMessages);
+          if (parsedMsgs && typeof parsedMsgs === 'object') {
+            setMessagesByAgent((prev) => ({ ...prev, ...parsedMsgs }));
+          }
+        }
+        if (savedKnowledge) {
+          const parsedKnowledge: Record<string, KnowledgeDocument[]> = JSON.parse(savedKnowledge);
+          if (parsedKnowledge && typeof parsedKnowledge === 'object') {
+            setKnowledgeByAgent((prev) => ({ ...prev, ...parsedKnowledge }));
+          }
+        }
         try {
-          initialCreds = JSON.parse(savedToolCreds) || {};
+          localStorage.removeItem('orbit_free_api_providers_v1');
         } catch {}
-      }
-      if (savedSlackWebhook) {
-        initialCreds.slack = { ...(initialCreds.slack || {}), webhookUrl: savedSlackWebhook };
-      }
-      if (savedGhRepo || savedGhToken) {
-        initialCreds.github = {
-          ...(initialCreds.github || {}),
-          targetParam: savedGhRepo || initialCreds.github?.targetParam || 'vercel/next.js',
-          apiToken: savedGhToken || initialCreds.github?.apiToken || '',
-        };
-      }
-      if (savedNotionToken || savedNotionParent) {
-        initialCreds.notion = {
-          ...(initialCreds.notion || {}),
-          apiToken: savedNotionToken || initialCreds.notion?.apiToken || '',
-          targetParam: savedNotionParent || initialCreds.notion?.targetParam || '',
-        };
-      }
-      setToolCredentialsState(initialCreds);
-
-      const savedAgents = localStorage.getItem(STORAGE_KEYS.AGENTS);
-      const savedRoutines = localStorage.getItem(STORAGE_KEYS.ROUTINES);
-      const savedExecutions = localStorage.getItem(STORAGE_KEYS.EXECUTIONS);
-      const savedMessages = localStorage.getItem(STORAGE_KEYS.MESSAGES);
-      const savedKnowledge = localStorage.getItem(STORAGE_KEYS.KNOWLEDGE);
-
-      if (savedAgents) {
-        const parsed = JSON.parse(savedAgents);
-        if (Array.isArray(parsed) && parsed.length > 0) setAgents(parsed);
-      } else {
-        const nowIso = new Date().toISOString();
-        setAgents((prev) =>
-          prev.map((ag) => (ag.vmStatus === 'active' ? { ...ag, vmLastActive: nowIso } : ag))
-        );
-      }
-      if (savedRoutines) {
-        const parsedRoutines: Record<string, AgentRoutine[]> = JSON.parse(savedRoutines);
-        const nowMs = Date.now();
-        const normalizedRoutines: Record<string, AgentRoutine[]> = {};
-        for (const [k, list] of Object.entries(parsedRoutines)) {
-          normalizedRoutines[k] = (list || []).map((r) => {
-            const nextMs = Date.parse(r.nextRunAt || '');
-            if (Number.isNaN(nextMs) || nextMs <= nowMs) {
-              return {
-                ...r,
-                nextRunAt: computeNextRunAt(r.frequency, r.time, r.days, new Date()),
-              };
+        const savedFreeProviders = localStorage.getItem(STORAGE_KEYS.FREE_API_PROVIDERS);
+        if (savedFreeProviders) {
+          try {
+            const parsedProviders = JSON.parse(savedFreeProviders);
+            if (Array.isArray(parsedProviders) && parsedProviders.length > 0) {
+              setFreeApiProviders(sanitizePersistedFreeApiProviders(parsedProviders));
             }
-            return r;
-          });
+          } catch {}
         }
-        setRoutinesByAgent(normalizedRoutines);
+      } catch (e) {
+        console.warn('Failed to hydrate local Orbit state:', e);
+      } finally {
+        setTimeout(() => {
+          hasHydratedFromStorageRef.current = true;
+        }, 50);
       }
-      if (savedExecutions) {
-        const parsedExecs: Record<string, RoutineExecution[]> = JSON.parse(savedExecutions);
-        const cleanedExecs: Record<string, RoutineExecution[]> = {};
-        for (const [k, list] of Object.entries(parsedExecs)) {
-          cleanedExecs[k] = filterThreeDayHistory(list);
-        }
-        setExecutionsByAgent(cleanedExecs);
-      }
-      if (savedMessages) {
-        const parsedMsgs: Record<string, AgentChatMessage[]> = JSON.parse(savedMessages);
-        const cleanedMsgs: Record<string, AgentChatMessage[]> = {};
-        for (const [k, list] of Object.entries(parsedMsgs)) {
-          cleanedMsgs[k] = filterThreeDayHistory(list);
-        }
-        setMessagesByAgent(cleanedMsgs);
-      }
-      if (savedKnowledge) {
-        const parsedKnowledge: Record<string, KnowledgeDocument[]> = JSON.parse(savedKnowledge);
-        if (parsedKnowledge && typeof parsedKnowledge === 'object') {
-          setKnowledgeByAgent((prev) => ({ ...prev, ...parsedKnowledge }));
-        }
-      }
-    } catch (e) {
-      console.warn('Failed to hydrate local Orbit state:', e);
-    }
+    });
   }, []);
 
-  // Persist to localStorage
+  // Persist to localStorage (only after initial hydration completes so DEMO_* never overwrites saved data)
   useEffect(() => {
+    if (!hasHydratedFromStorageRef.current) return;
     try {
       localStorage.setItem(STORAGE_KEYS.AGENTS, JSON.stringify(agents));
     } catch {}
   }, [agents]);
 
   useEffect(() => {
+    if (!hasHydratedFromStorageRef.current) return;
     try {
       localStorage.setItem(STORAGE_KEYS.ROUTINES, JSON.stringify(routinesByAgent));
     } catch {}
   }, [routinesByAgent]);
 
   useEffect(() => {
+    if (!hasHydratedFromStorageRef.current) return;
     try {
       localStorage.setItem(STORAGE_KEYS.EXECUTIONS, JSON.stringify(executionsByAgent));
     } catch {}
   }, [executionsByAgent]);
 
   useEffect(() => {
+    if (!hasHydratedFromStorageRef.current) return;
     try {
       localStorage.setItem(STORAGE_KEYS.MESSAGES, JSON.stringify(messagesByAgent));
     } catch {}
   }, [messagesByAgent]);
 
   useEffect(() => {
+    if (!hasHydratedFromStorageRef.current) return;
     try {
       localStorage.setItem(STORAGE_KEYS.KNOWLEDGE, JSON.stringify(knowledgeByAgent));
     } catch {}
@@ -823,62 +1133,98 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
 
             for (const ag of loadedAgents) {
               persistedAgentIdsRef.current.add(ag.agentId);
+
+              // 1. Load routines subcollection with mandatory ownerId filter for Firestore rules
               try {
-                const rSnap = await getDocs(collection(db, 'agents', ag.agentId, 'routines'));
-                nextRoutines[ag.agentId] = rSnap.docs.map((docItem) => {
-                  const rd = docItem.data();
-                  return {
-                    routineId: rd.routineId,
-                    agentId: rd.agentId,
-                    ownerId: rd.ownerId,
-                    name: rd.name,
-                    goal: rd.goal,
-                    instructions: rd.instructions,
-                    frequency: rd.frequency,
-                    time: rd.time,
-                    timezone: rd.timezone,
-                    days: Array.isArray(rd.days) ? rd.days : [],
-                    tools: Array.isArray(rd.tools) ? rd.tools : [],
-                    targetChannel: rd.targetChannel || '#new-channel',
-                    isActive: Boolean(rd.isActive),
-                    nextRunAt: rd.nextRunAt || '',
-                    lastRunAt: rd.lastRunAt || '',
-                    createdAt: new Date().toISOString(),
-                    updatedAt: new Date().toISOString(),
-                  };
-                });
+                const rQuery = query(
+                  collection(db, 'agents', ag.agentId, 'routines'),
+                  where('ownerId', '==', uid)
+                );
+                const rSnap = await getDocs(rQuery);
+                if (!rSnap.empty) {
+                  nextRoutines[ag.agentId] = rSnap.docs.map((docItem) => {
+                    const rd = docItem.data();
+                    return {
+                      routineId: rd.routineId,
+                      agentId: rd.agentId,
+                      ownerId: rd.ownerId,
+                      name: rd.name,
+                      goal: rd.goal,
+                      instructions: rd.instructions,
+                      frequency: rd.frequency,
+                      time: rd.time,
+                      timezone: rd.timezone,
+                      days: Array.isArray(rd.days) ? rd.days : [],
+                      tools: Array.isArray(rd.tools) ? rd.tools : [],
+                      targetChannel: rd.targetChannel || '#new-channel',
+                      isActive: Boolean(rd.isActive),
+                      nextRunAt: rd.nextRunAt || '',
+                      lastRunAt: rd.lastRunAt || '',
+                      createdAt: new Date().toISOString(),
+                      updatedAt: new Date().toISOString(),
+                    };
+                  });
+                }
+              } catch (rErr) {
+                console.warn('Routines subcollection load warning:', rErr);
+              }
 
-                const eSnap = await getDocs(collection(db, 'agents', ag.agentId, 'executions'));
-                nextExecutions[ag.agentId] = eSnap.docs.map((docItem) => {
-                  const ed = docItem.data();
-                  let stepsLog = [];
-                  try {
-                    stepsLog = JSON.parse(ed.stepsLog || '[]');
-                  } catch {}
-                  return {
-                    executionId: ed.executionId,
-                    routineId: ed.routineId,
-                    routineName: ed.routineName,
-                    agentId: ed.agentId,
-                    ownerId: ed.ownerId,
-                    status: ed.status,
-                    triggerType: ed.triggerType,
-                    summary: ed.summary,
-                    stepsLog,
-                    startedAt: ed.startedAt,
-                    completedAt: ed.completedAt,
-                    createdAt: ed.completedAt || new Date().toISOString(),
-                  };
-                });
+              // 2. Load executions subcollection with mandatory ownerId filter
+              try {
+                const eQuery = query(
+                  collection(db, 'agents', ag.agentId, 'executions'),
+                  where('ownerId', '==', uid)
+                );
+                const eSnap = await getDocs(eQuery);
+                if (!eSnap.empty) {
+                  nextExecutions[ag.agentId] = eSnap.docs.map((docItem) => {
+                    const ed = docItem.data();
+                    let stepsLog = [];
+                    try {
+                      stepsLog = JSON.parse(ed.stepsLog || '[]');
+                    } catch {}
+                    return {
+                      executionId: ed.executionId,
+                      routineId: ed.routineId,
+                      routineName: ed.routineName,
+                      agentId: ed.agentId,
+                      ownerId: ed.ownerId,
+                      status: ed.status,
+                      triggerType: ed.triggerType,
+                      summary: ed.summary,
+                      stepsLog,
+                      startedAt: ed.startedAt,
+                      completedAt: ed.completedAt,
+                      createdAt: ed.completedAt || new Date().toISOString(),
+                    };
+                  });
+                }
+              } catch (eErr) {
+                console.warn('Executions subcollection load warning:', eErr);
+              }
 
-                const mSnap = await getDocs(collection(db, 'agents', ag.agentId, 'messages'));
+              // 3. Load messages subcollection with mandatory ownerId filter and chronological sorting
+              try {
+                const mQuery = query(
+                  collection(db, 'agents', ag.agentId, 'messages'),
+                  where('ownerId', '==', uid)
+                );
+                const mSnap = await getDocs(mQuery);
                 if (!mSnap.empty) {
-                  nextMessages[ag.agentId] = mSnap.docs.map((docItem) => {
+                  const loadedMsgs: AgentChatMessage[] = mSnap.docs.map((docItem) => {
                     const md = docItem.data();
                     let structured = undefined;
                     try {
                       if (md.payloadJson) structured = JSON.parse(md.payloadJson);
                     } catch {}
+                    const tsFromFirestore =
+                      typeof md.createdAt?.toDate === 'function'
+                        ? md.createdAt.toDate().toISOString()
+                        : undefined;
+                    const idDigitsMatch = String(md.messageId || '').match(/(\d{10,15})/);
+                    const tsFromId = idDigitsMatch
+                      ? new Date(Number(idDigitsMatch[1])).toISOString()
+                      : undefined;
                     return {
                       messageId: md.messageId,
                       agentId: md.agentId,
@@ -887,19 +1233,52 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
                       content: md.content,
                       responseType: md.responseType,
                       structured,
+                      executionMeta: structured?.executionMeta,
                       timeLabel: md.timeLabel || '',
-                      createdAt: new Date().toISOString(),
+                      createdAt: tsFromFirestore || tsFromId || new Date().toISOString(),
                     };
                   });
+                  nextMessages[ag.agentId] = loadedMsgs;
                 }
-              } catch (subErr) {
-                console.warn('Subcollection load warning:', subErr);
+              } catch (mErr) {
+                console.warn('Messages subcollection load warning:', mErr);
               }
             }
 
             setRoutinesByAgent((prev) => ({ ...prev, ...nextRoutines }));
             setExecutionsByAgent((prev) => ({ ...prev, ...nextExecutions }));
-            setMessagesByAgent((prev) => ({ ...prev, ...nextMessages }));
+            setMessagesByAgent((prev) => {
+              const merged: Record<string, AgentChatMessage[]> = { ...prev };
+              for (const [agId, fsMsgs] of Object.entries(nextMessages)) {
+                const localMsgs = prev[agId] || [];
+                const byId = new Map<string, AgentChatMessage>();
+                for (const m of localMsgs) {
+                  byId.set(m.messageId, m);
+                }
+                for (const m of fsMsgs) {
+                  const existing = byId.get(m.messageId);
+                  if (!existing) {
+                    byId.set(m.messageId, m);
+                  } else if (!existing.structured && m.structured) {
+                    byId.set(m.messageId, { ...existing, structured: m.structured });
+                  }
+                }
+                const combined = Array.from(byId.values()).sort((a, b) => {
+                  const getSortMs = (item: AgentChatMessage) => {
+                    const idMatch = String(item.messageId || '').match(/(\d{10,15})/);
+                    if (idMatch) return Number(idMatch[1]);
+                    const parsed = Date.parse(item.createdAt || '');
+                    return Number.isNaN(parsed) ? 0 : parsed;
+                  };
+                  return getSortMs(a) - getSortMs(b);
+                });
+                merged[agId] = combined;
+              }
+              try {
+                localStorage.setItem(STORAGE_KEYS.MESSAGES, JSON.stringify(merged));
+              } catch {}
+              return merged;
+            });
           } else {
             // Seed starter agents into Firestore for this authenticated user so subcollection writes succeed
             setAgents((prev) => prev.map((ag) => ({ ...ag, ownerId: uid })));
@@ -1197,9 +1576,15 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
         timeLabel: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         createdAt: nowIso,
       };
-      setMessagesByAgent((prev) => ({ ...prev, [agentId]: [welcomeMsg] }));
+      setMessagesByAgent((prev) => {
+        const next = { ...prev, [agentId]: [welcomeMsg] };
+        try {
+          localStorage.setItem(STORAGE_KEYS.MESSAGES, JSON.stringify(next));
+        } catch {}
+        return next;
+      });
 
-      if (!user.isDemo && auth.currentUser?.emailVerified) {
+      if (auth.currentUser?.emailVerified) {
         const currentUid = sanitizeId(auth.currentUser.uid, 'user');
         const agentRef = doc(db, 'agents', agentId);
         try {
@@ -1219,6 +1604,17 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
             updatedAt: serverTimestamp(),
           });
           persistedAgentIdsRef.current.add(agentId);
+          await setDoc(doc(db, 'agents', agentId, 'messages', welcomeMsg.messageId), {
+            messageId: welcomeMsg.messageId,
+            agentId,
+            ownerId: currentUid,
+            role: 'agent',
+            content: welcomeMsg.content.slice(0, 8000),
+            responseType: 'message',
+            payloadJson: '{}',
+            timeLabel: welcomeMsg.timeLabel.slice(0, 64),
+            createdAt: serverTimestamp(),
+          });
         } catch (err) {
           handleFirestoreError(err, OperationType.CREATE, `agents/${agentId}`);
         }
@@ -1537,19 +1933,35 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
   const appendChatMessage = useCallback(
     async (agentId: string, message: AgentChatMessage) => {
       setMessagesByAgent((prev) => {
-        const current = filterThreeDayHistory(prev[agentId] || []);
-        return {
+        const current = prev[agentId] || [];
+        const exists = current.some((m) => m.messageId === message.messageId);
+        const updatedList = exists
+          ? current.map((m) => (m.messageId === message.messageId ? message : m))
+          : [...current, message];
+        const next = {
           ...prev,
-          [agentId]: [...current, message],
+          [agentId]: updatedList,
         };
+        try {
+          localStorage.setItem(STORAGE_KEYS.MESSAGES, JSON.stringify(next));
+        } catch {}
+        return next;
       });
 
-      if (!user.isDemo && auth.currentUser?.emailVerified) {
+      if (auth.currentUser?.emailVerified) {
         const cleanAgentId = sanitizeId(agentId, 'agent');
         const currentUid = sanitizeId(auth.currentUser.uid, 'user');
         const msgId = sanitizeId(message.messageId, 'msg');
         try {
           await ensureAgentInFirestore(cleanAgentId);
+          const rawStructuredJson = JSON.stringify(message.structured || {});
+          const safePayloadJson =
+            rawStructuredJson.length <= 15800
+              ? rawStructuredJson
+              : JSON.stringify({
+                  type: message.structured?.type || message.responseType || 'message',
+                  message: (message.structured?.message || '').slice(0, 4000),
+                });
           await setDoc(doc(db, 'agents', cleanAgentId, 'messages', msgId), {
             messageId: msgId,
             agentId: cleanAgentId,
@@ -1557,23 +1969,29 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
             role: message.role === 'user' ? 'user' : 'agent',
             content: (message.content || '').slice(0, 8000),
             responseType: message.responseType || 'message',
-            payloadJson: JSON.stringify(message.structured || {}).slice(0, 16000),
+            payloadJson: safePayloadJson,
             timeLabel: (message.timeLabel || '').slice(0, 64),
             createdAt: serverTimestamp(),
           });
         } catch (err) {
-          handleFirestoreError(err, OperationType.CREATE, `agents/${cleanAgentId}/messages/${msgId}`);
+          console.warn('Firestore message persistence warning (saved in localStorage):', err);
         }
       }
     },
-    [user.isDemo, ensureAgentInFirestore]
+    [ensureAgentInFirestore]
   );
 
   const clearAgentChat = useCallback(async (agentId: string) => {
-    setMessagesByAgent((prev) => ({
-      ...prev,
-      [agentId]: (prev[agentId] || []).slice(0, 1),
-    }));
+    setMessagesByAgent((prev) => {
+      const next = {
+        ...prev,
+        [agentId]: (prev[agentId] || []).slice(0, 1),
+      };
+      try {
+        localStorage.setItem(STORAGE_KEYS.MESSAGES, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
   }, []);
 
   const createOrUpdateRoutine = useCallback(
@@ -2212,6 +2630,12 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
       setNotionParentId,
       toolCredentials,
       setToolCredential,
+      freeApiProviders,
+      toggleFreeApiProvider,
+      toggleFreeApiKey,
+      addOrUpdateFreeApiKey,
+      deleteFreeApiKey,
+      verifyFreeApiKeyHealth,
       autoSchedulerEnabled,
       setAutoSchedulerEnabled,
       lastSchedulerTick,
@@ -2270,11 +2694,21 @@ export function OrbitProvider({ children }: { children: React.ReactNode }) {
       slackWebhookUrl,
       setSlackWebhookUrl,
       githubRepo,
+      setGithubRepo,
       githubToken,
+      setGithubToken,
       notionToken,
+      setNotionToken,
       notionParentId,
+      setNotionParentId,
       toolCredentials,
       setToolCredential,
+      freeApiProviders,
+      toggleFreeApiProvider,
+      toggleFreeApiKey,
+      addOrUpdateFreeApiKey,
+      deleteFreeApiKey,
+      verifyFreeApiKeyHealth,
       autoSchedulerEnabled,
       lastSchedulerTick,
       scheduleRoutineInSeconds,

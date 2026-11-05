@@ -1,5 +1,6 @@
 import {
   AgentAutonomyLevel,
+  AgentChatMessage,
   AgentConfig,
   AgentEventTrigger,
   AgentModelId,
@@ -8,6 +9,9 @@ import {
   AgentStructuredResponse,
   AgentTemplatePreset,
   AgentTone,
+  FreeAgentApiProvider,
+  FreeAgentApiProviderId,
+  FreeApiKeyEntry,
   KnowledgeDocument,
   RoutineDraft,
   RoutineExecution,
@@ -1009,6 +1013,14 @@ export function isContinuationInput(rawText: string): boolean {
     'create routine',
     'ensuite',
     'next',
+    'maintenant',
+    'tout de suite',
+    'immédiatement',
+    'immediatement',
+    'fais-le maintenant',
+    'fais le maintenant',
+    'exécute maintenant',
+    'execute maintenant',
   ]);
   if (continuationPhrases.has(norm)) return true;
   if (
@@ -1021,6 +1033,40 @@ export function isContinuationInput(rawText: string): boolean {
     norm.startsWith('outils connectés') ||
     norm.startsWith('tools connected')
   ) {
+    return true;
+  }
+  // Detect follow-up insistence on immediate execution of the previous task (e.g. "je souhaite executé la tache tout de suite non à 8:00 heure")
+  const hasImmediateInsistence =
+    /(tout de suite|maintenant|immédiatement|immediatement|right now|immediately|non à 8|pas à 8)/i.test(
+      norm
+    ) &&
+    /(tâche|tache|task|exécut|execut|fais|faire|lance|action|demande)/i.test(norm) &&
+    !/(gmail|mail|courrier|courier|slack|github|notion|calendar|discord|linear|clickup|reddit|youtube)/i.test(
+      norm
+    );
+  if (hasImmediateInsistence) {
+    return true;
+  }
+  return false;
+}
+
+export function isGmailCleanupOrUnsubscribeIntent(
+  userPrompt: string,
+  historyMessages: { role: string; content: string }[] = []
+): boolean {
+  const effective = resolveMultiTurnPrompt(userPrompt, historyMessages).toLowerCase();
+  const hasMailContext =
+    /(boite mail|boîte mail|gmail|\bmail\b|\bmails\b|e-mail|email|courrier|courier|courriel|inbox|newsletter|spam|promotion|indésirable|indesirable)/i.test(
+      effective
+    );
+  const hasCleanupOrUnsubscribeAction =
+    /(supprim|effac|nettoi|nettoy|vid|corbeille|trash|delete|clean|inutile|pleine|satur|désinscri|desinscri|désabonn|desabonn|unsubscribe)/i.test(
+      effective
+    );
+  if (hasMailContext && hasCleanupOrUnsubscribeAction) {
+    return true;
+  }
+  if (/(désinscri|desinscri|désabonn|desabonn|unsubscribe)/i.test(effective)) {
     return true;
   }
   return false;
@@ -1481,11 +1527,40 @@ export function analyzeUserPromptFallback(
     };
   }
 
+  // 4b-0. Direct immediate Gmail inbox cleanup, deletion of useless emails, and newsletter unsubscription
+  if (isGmailCleanupOrUnsubscribeIntent(effectivePrompt, historyMessages)) {
+    return {
+      type: 'tool_connection',
+      message:
+        locale === 'fr'
+          ? `⚠️ **Action immédiate requise : Authentification Google Workspace (Gmail OAuth 2.0)**\n\n` +
+            `J'ai bien compris que vous souhaitez **exécuter ce nettoyage tout de suite** (et non le planifier à 08:00) :\n` +
+            `1. **Scanner votre boîte Gmail en direct** pour identifier les courriers promotionnels, newsletters et e-mails inutiles qui saturent votre espace.\n` +
+            `2. **Extraire les liens officiels de désinscription (\`List-Unsubscribe\`)** pour vous désabonner immédiatement des courriers indésirables.\n` +
+            `3. **Mettre à la corbeille Gmail (\`POST /gmail/v1/users/me/messages/{id}/trash\`)** les e-mails sélectionnés après votre confirmation.\n\n` +
+            `👉 **Pourquoi rien n'a encore été supprimé ?** Aucun jeton OAuth 2.0 Gmail actif n'est connecté à votre session actuelle (je refuse de simuler une fausse suppression). Cliquez sur **"Vérifier API / OAuth"** ou **"Connecter Google Workspace"** dans la carte **Gmail** ci-dessous pour lancer le scan et le nettoyage en direct maintenant :`
+          : `⚠️ **Immediate Action Required: Google Workspace Authentication (Gmail OAuth 2.0)**\n\n` +
+            `I understand you want to **clean up your inbox and unsubscribe from newsletters right now** (not schedule it for 8:00 AM).\n\n` +
+            `👉 **Why hasn't anything been deleted yet?** No active Gmail OAuth 2.0 token is connected to your current session. Click **Verify OAuth / Connect** in the **Gmail** card below to scan your live inbox, extract \`List-Unsubscribe\` links, and move unwanted emails to Trash right now:`,
+      suggestedTools: mapToolSlugsToSuggestions(
+        ['gmail'],
+        agent.tools,
+        'Authentifiez votre compte Google Workspace (OAuth 2.0) pour scanner vos promotions/newsletters et mettre les e-mails inutiles à la corbeille en direct.',
+        locale
+      ),
+    };
+  }
+
   // 4b. Direct immediate Gmail query (reading/summarizing emails without recurring schedule)
   if (
     lower.includes('email') ||
     lower.includes('e-mail') ||
     lower.includes('gmail') ||
+    lower.includes('boite mail') ||
+    lower.includes('boîte mail') ||
+    /\bmails?\b/i.test(lower) ||
+    lower.includes('courrier') ||
+    lower.includes('courier') ||
     lower.includes('courriel') ||
     lower.includes('non lu') ||
     lower.includes('unread') ||
@@ -1496,7 +1571,7 @@ export function analyzeUserPromptFallback(
         type: 'tool_connection',
         message:
           locale === 'fr'
-            ? 'Pour lire et résumer vos e-mails Gmail non lus, veuillez d’abord connecter votre compte **Gmail** :'
+            ? 'Pour lire et gérer vos e-mails Gmail en direct, veuillez d’abord connecter votre compte **Gmail** :'
             : locale === 'it'
               ? 'Per leggere e riassumere le tue email Gmail non lette, connetti prima il tuo account **Gmail**:'
               : 'To read and summarize your unread Gmail messages, please connect your **Gmail** account first:',
@@ -1841,16 +1916,16 @@ export function analyzeUserPromptFallback(
       type: 'message',
       message:
         locale === 'fr'
-          ? `J'ai bien analysé votre demande : **"${effectivePrompt}"**.\n\n` +
-            `• **Agent actif** : **${agent.name}** (Outils connectés : *${connectedNames}*)\n` +
-            `• **Exécution** : Votre instruction a été traitée. Si vous souhaitez automatiser cette tâche de manière récurrente (ex. *tous les jours à 08:00 sur #new-channel*) ou lancer une recherche en direct dans le **Cloud VM Desktop**, précisez simplement la fréquence ou l'URL cible.`
-          : locale === 'it'
-            ? `Ho analizzato la tua richiesta: **"${effectivePrompt}"**.\n\n` +
-              `• **Agente attivo**: **${agent.name}** (Strumenti connessi: *${connectedNames}*)\n` +
-              `• **Esecuzione**: Istruzione elaborata. Se desideri pianificare questa attività come routine ricorrente o usare il **Cloud VM Desktop**, indica la frequenza o l'URL.`
-            : `I have processed your request: **"${effectivePrompt}"**.\n\n` +
-              `• **Active Agent**: **${agent.name}** (Connected tools: *${connectedNames}*)\n` +
-              `• **Execution**: Your instruction has been handled. If you'd like to schedule this as a recurring routine (e.g., *every day at 8:00 AM on #new-channel*) or run a live web extraction via the **Cloud VM Desktop**, just specify the schedule or target URL.`,
+          ? `⚠️ **Transparence totale (${agent.name})** — Pour répondre de manière libre ou exécuter **« ${effectivePrompt} »** en direct :\n\n` +
+            `• **Aucune clé API LLM active** n'est actuellement connectée pour le raisonnement libre (et je refuse de simuler une fausse exécution).\n` +
+            `• **Outils connectés sur cet agent** : *${connectedNames}*\n\n` +
+            `👉 **Comment exécuter votre demande immédiatement ?**\n` +
+            `1. **Pour activer l'IA conversationnelle complète** : Cliquez sur **APIs (0)** en haut du chat (ou dans **Paramètres → APIs & Modèles IA**) et connectez une vraie clé API gratuite (**Google AI Studio / Gemini**, **Groq**, **OpenRouter**...).\n` +
+            `2. **Pour exécuter une action d'outil en direct maintenant** : Authentifiez votre compte **Gmail (Google OAuth)**, **Slack**, **GitHub** ou **Notion**, ou utilisez une commande directe comme \`/vm\`, \`/tools\` ou *"Nettoie ma boîte Gmail et désinscris-moi des courriers inutiles"*.`
+          : `⚠️ **Full Transparency (${agent.name})** — To execute **"${effectivePrompt}"** live:\n\n` +
+            `• **No active LLM API key** is connected for open-ended reasoning yet (and I never simulate fake executions).\n` +
+            `• **Connected tools on this agent**: *${connectedNames}*\n\n` +
+            `👉 Connect a free API key (**Google AI Studio**, **Groq**, **OpenRouter**) via the **APIs** button at the top of the chat, or authenticate **Gmail / Slack / GitHub / Notion** to run live tool actions right now.`,
     };
   }
 
@@ -2046,8 +2121,272 @@ export function computeWorkspaceAnalytics(
 }
 
 export function getAgentModelDisplayName(model?: AgentModelId): string {
-  if (model === 'gemini-3.1-pro-preview') return 'Gemini 3.1 Pro';
-  return 'Gemini 3 Flash';
+  switch (model) {
+    case 'gemini-3.1-pro-preview':
+      return 'Gemini 3.1 Pro';
+    case 'groq/llama-3.3-70b-versatile':
+      return 'Groq · Llama 3.3 70B';
+    case 'router9/shared-monthly-free':
+      return 'Router9 · Shared Free';
+    case 'speechify/tts-multilingual-free':
+      return 'Speechify · Free TTS';
+    case 'bai/promotional-free-v1':
+      return 'B.AI · Promo Free';
+    case 'nvidia/llama-3.1-405b-instruct':
+      return 'NVIDIA NIM · Llama 405B';
+    case 'openrouter/deepseek-r1-free':
+      return 'OpenRouter · DeepSeek R1';
+    case 'huggingface/qwen-2.5-72b-instruct':
+      return 'HF Router · Qwen 2.5 72B';
+    case 'orcarouter/free-key-v1':
+      return 'OrcaRouter · Free Key';
+    case 'gemini-3-flash-preview':
+    default:
+      return 'Gemini 3 Flash';
+  }
+}
+
+export function resolveProviderForModel(model?: AgentModelId): FreeAgentApiProviderId {
+  switch (model) {
+    case 'groq/llama-3.3-70b-versatile':
+      return 'groq';
+    case 'router9/shared-monthly-free':
+      return 'router9';
+    case 'speechify/tts-multilingual-free':
+      return 'speechify';
+    case 'bai/promotional-free-v1':
+      return 'bai_promo';
+    case 'nvidia/llama-3.1-405b-instruct':
+      return 'nvidia_nim';
+    case 'openrouter/deepseek-r1-free':
+      return 'openrouter';
+    case 'huggingface/qwen-2.5-72b-instruct':
+      return 'huggingface_router';
+    case 'orcarouter/free-key-v1':
+      return 'orcarouter';
+    case 'gemini-3-flash-preview':
+    case 'gemini-3.1-pro-preview':
+    default:
+      return 'google_ai_studio';
+  }
+}
+
+export function maskApiKeyDisplay(rawKey: string): string {
+  const clean = (rawKey || '').trim();
+  if (!clean) return 'AQ...ckaw';
+  if (clean.length <= 8) {
+    return `${clean.slice(0, 2)}...${clean.slice(-2)}`;
+  }
+  return `${clean.slice(0, 2)}...${clean.slice(-4)}`;
+}
+
+export function getProviderHealthyKeyCount(provider: FreeAgentApiProvider): number {
+  if (!provider || !Array.isArray(provider.keys)) return 0;
+  return provider.keys.filter((k) => k.isEnabled && k.isHealthy).length;
+}
+
+export function createDefaultFreeApiProviders(): FreeAgentApiProvider[] {
+  return [
+    {
+      providerId: 'google_ai_studio',
+      name: 'Google AI Studio',
+      isEnabled: false,
+      endpointUrl: 'https://generativelanguage.googleapis.com/v1beta/models',
+      defaultModel: 'gemini-3-flash-preview',
+      availableModels: [
+        {
+          id: 'gemini-3-flash-preview',
+          label: 'Gemini 3 Flash (Free Tier)',
+          freeTierNote: '1 500 req/jour gratuites · Clé AIza... requise',
+        },
+        {
+          id: 'gemini-3.1-pro-preview',
+          label: 'Gemini 3.1 Pro (Free Tier)',
+          freeTierNote: 'Raisonnement complexe & Code RAG · Clé AIza... requise',
+        },
+      ],
+      docsUrl: 'https://aistudio.google.com/apikey',
+      keys: [],
+    },
+    {
+      providerId: 'groq',
+      name: 'Groq',
+      isEnabled: false,
+      endpointUrl: 'https://api.groq.com/openai/v1/chat/completions',
+      defaultModel: 'groq/llama-3.3-70b-versatile',
+      availableModels: [
+        {
+          id: 'groq/llama-3.3-70b-versatile',
+          label: 'Groq · Llama 3.3 70B Versatile',
+          freeTierNote: 'LPU Ultra-Rapide (~300 tok/s) · Clé gsk_... requise',
+        },
+      ],
+      docsUrl: 'https://console.groq.com/keys',
+      keys: [],
+    },
+    {
+      providerId: 'router9',
+      name: 'Router9 (shared monthly credits)',
+      badgeNote: 'shared monthly credits',
+      isEnabled: false,
+      endpointUrl: 'https://api.router9.ai/v1/chat/completions',
+      defaultModel: 'router9/shared-monthly-free',
+      availableModels: [
+        {
+          id: 'router9/shared-monthly-free',
+          label: 'Router9 · Auto-Router Mensuel',
+          freeTierNote: 'Clé API Router9 requise',
+        },
+      ],
+      docsUrl: 'https://openrouter.ai/keys',
+      keys: [],
+    },
+    {
+      providerId: 'speechify',
+      name: 'Speechify (monthly free TTS characters)',
+      badgeNote: 'monthly free TTS characters',
+      isEnabled: false,
+      endpointUrl: 'https://api.sws.speechify.com/v1/audio/speech',
+      defaultModel: 'speechify/tts-multilingual-free',
+      availableModels: [
+        {
+          id: 'speechify/tts-multilingual-free',
+          label: 'Speechify · Synthèse Vocale TTS',
+          freeTierNote: 'Clé API Speechify requise (api.sws.speechify.com)',
+        },
+      ],
+      docsUrl: 'https://console.speechify.com',
+      keys: [],
+    },
+    {
+      providerId: 'bai_promo',
+      name: 'B.AI (promotional free model)',
+      badgeNote: 'promotional free model',
+      isEnabled: false,
+      endpointUrl: 'https://api.together.xyz/v1/chat/completions',
+      defaultModel: 'bai/promotional-free-v1',
+      availableModels: [
+        {
+          id: 'bai/promotional-free-v1',
+          label: 'B.AI / Compatible OpenAI Endpoint',
+          freeTierNote: 'Clé API Bearer requise',
+        },
+      ],
+      docsUrl: 'https://huggingface.co/settings/tokens',
+      keys: [],
+    },
+    {
+      providerId: 'nvidia_nim',
+      name: 'NVIDIA NIM',
+      isEnabled: false,
+      endpointUrl: 'https://integrate.api.nvidia.com/v1/chat/completions',
+      defaultModel: 'nvidia/llama-3.1-405b-instruct',
+      availableModels: [
+        {
+          id: 'nvidia/llama-3.1-405b-instruct',
+          label: 'NVIDIA NIM · Llama 3.1 405B Instruct',
+          freeTierNote: 'Clé développeur NVIDIA (nvapi-...) requise',
+        },
+      ],
+      docsUrl: 'https://build.nvidia.com',
+      keys: [],
+    },
+    {
+      providerId: 'openrouter',
+      name: 'OpenRouter',
+      isEnabled: false,
+      endpointUrl: 'https://openrouter.ai/api/v1/chat/completions',
+      defaultModel: 'openrouter/deepseek-r1-free',
+      availableModels: [
+        {
+          id: 'openrouter/deepseek-r1-free',
+          label: 'OpenRouter · DeepSeek R1 (:free)',
+          freeTierNote: 'Clé OpenRouter (sk-or-v1-...) requise',
+        },
+      ],
+      docsUrl: 'https://openrouter.ai/keys',
+      keys: [],
+    },
+    {
+      providerId: 'huggingface_router',
+      name: 'HuggingFace Router',
+      isEnabled: false,
+      endpointUrl: 'https://router.huggingface.co/v1/chat/completions',
+      defaultModel: 'huggingface/qwen-2.5-72b-instruct',
+      availableModels: [
+        {
+          id: 'huggingface/qwen-2.5-72b-instruct',
+          label: 'HuggingFace Router · Qwen 2.5 72B Instruct',
+          freeTierNote: 'Jeton HuggingFace (hf_...) requis',
+        },
+      ],
+      docsUrl: 'https://huggingface.co/settings/tokens',
+      keys: [],
+    },
+    {
+      providerId: 'orcarouter',
+      name: 'OrcaRouter (free key)',
+      badgeNote: 'free key',
+      isEnabled: false,
+      endpointUrl: 'https://openrouter.ai/api/v1/chat/completions',
+      defaultModel: 'orcarouter/free-key-v1',
+      availableModels: [
+        {
+          id: 'orcarouter/free-key-v1',
+          label: 'OrcaRouter · OpenAI-Compatible Endpoint',
+          freeTierNote: 'Clé API valide requise',
+        },
+      ],
+      docsUrl: 'https://openrouter.ai/keys',
+      keys: [],
+    },
+  ];
+}
+
+const LEGACY_FAKE_KEY_IDS = new Set([
+  'key_gais_1',
+  'key_groq_1',
+  'key_r9_1',
+  'key_sp_1',
+  'key_bai_1',
+  'key_nv_1',
+  'key_or_1',
+  'key_hf_1',
+  'key_orca_1',
+]);
+
+export function sanitizePersistedFreeApiProviders(
+  saved: FreeAgentApiProvider[]
+): FreeAgentApiProvider[] {
+  const defaults = createDefaultFreeApiProviders();
+  if (!Array.isArray(saved) || saved.length === 0) return defaults;
+
+  return defaults.map((defProv) => {
+    const match = saved.find((s) => s.providerId === defProv.providerId);
+    if (!match || !Array.isArray(match.keys)) return defProv;
+
+    const realKeys = match.keys.filter(
+      (k) =>
+        k &&
+        k.rawKey &&
+        !LEGACY_FAKE_KEY_IDS.has(k.keyId) &&
+        !k.rawKey.includes('_orbit_') &&
+        !k.rawKey.includes('_free_pool_') &&
+        !k.rawKey.includes('_shared_monthly_') &&
+        !k.rawKey.includes('free_tier_pool') &&
+        !k.rawKey.includes('free_serverless_router') &&
+        !k.rawKey.includes('free_community_key') &&
+        !k.rawKey.includes('free_nim_credits') &&
+        !k.rawKey.includes('promo_free_agent') &&
+        !k.rawKey.includes('monthly_free_tts')
+    );
+
+    return {
+      ...defProv,
+      isEnabled: realKeys.length > 0 ? Boolean(match.isEnabled) : false,
+      keys: realKeys,
+    };
+  });
 }
 
 export function getAgentToneLabel(tone?: AgentTone, locale: Locale = 'fr'): string {
@@ -3421,6 +3760,15 @@ export function detectDirectToolActionIntent(
     }
   }
 
+  if (isGmailCleanupOrUnsubscribeIntent(lower)) {
+    return {
+      slug: 'gmail',
+      isWriteAction: true,
+      actionLabelFr:
+        'scanner vos e-mails inutiles/promotions, extraire les liens de désinscription et les mettre à la corbeille Gmail',
+    };
+  }
+
   if (lower.includes('gmail') || (lower.includes('mail') && hasCreateOrSendVerb && !lower.includes('outlook'))) {
     if (/(envoie|envoyer|send|brouillon|draft)/i.test(lower)) {
       return {
@@ -3500,8 +3848,329 @@ export function detectDirectToolActionIntent(
   return null;
 }
 
+export interface ChatSlashCommand {
+  command: string;
+  labelFr: string;
+  descriptionFr: string;
+  templatePromptFr: string;
+  category: 'vm' | 'routine' | 'tool' | 'system';
+  isImmediateAction?: boolean;
+}
 
+export const CHAT_SLASH_COMMANDS: ChatSlashCommand[] = [
+  {
+    command: '/vm',
+    labelFr: 'Navigation Cloud VM en direct',
+    descriptionFr: 'Ouvrir le navigateur Cloud VM et extraire des actualités ou une URL réelle',
+    templatePromptFr: 'Navigue sur Google News et résume les actualités sur ',
+    category: 'vm',
+  },
+  {
+    command: '/routine',
+    labelFr: 'Planifier une Routine Inngest',
+    descriptionFr: 'Créer une automatisation récurrente (quotidienne, hebdomadaire...)',
+    templatePromptFr: 'Chaque matin à 08:00, résume mes e-mails importants et publie sur #general',
+    category: 'routine',
+  },
+  {
+    command: '/notion',
+    labelFr: 'Créer une page Notion / Portfolio',
+    descriptionFr: 'Générer une page structurée dans votre espace Notion ou un Portfolio public',
+    templatePromptFr: 'Crée une page dans mon Notion pour mon portfolio professionnel : ',
+    category: 'tool',
+  },
+  {
+    command: '/github',
+    labelFr: 'Inspecter un dépôt GitHub en direct',
+    descriptionFr: 'Analyser les dernières Pull Requests et commits via l’API GitHub',
+    templatePromptFr: 'Analyse les dernières Pull Requests et issues du dépôt GitHub ',
+    category: 'tool',
+  },
+  {
+    command: '/slack',
+    labelFr: 'Publier un message Slack',
+    descriptionFr: 'Envoyer un rapport ou une notification vers votre canal Slack',
+    templatePromptFr: 'Envoie un message sur Slack avec le résumé suivant : ',
+    category: 'tool',
+  },
+  {
+    command: '/docs',
+    labelFr: 'Créer un document Google Docs',
+    descriptionFr: 'Générer un compte-rendu dans Google Docs via votre session OAuth',
+    templatePromptFr: 'Crée un document Google Docs intitulé ',
+    category: 'tool',
+  },
+  {
+    command: '/clear',
+    labelFr: 'Effacer la conversation',
+    descriptionFr: 'Réinitialiser l’historique de discussion de cet agent',
+    templatePromptFr: '/clear',
+    category: 'system',
+    isImmediateAction: true,
+  },
+];
 
+export function getMatchingSlashCommands(input: string): ChatSlashCommand[] {
+  const trimmed = (input || '').trimStart();
+  if (!trimmed.startsWith('/')) return [];
+  const firstToken = trimmed.split(/\s+/)[0].toLowerCase();
+  if (trimmed.includes(' ')) return [];
+  return CHAT_SLASH_COMMANDS.filter((item) =>
+    item.command.toLowerCase().startsWith(firstToken)
+  );
+}
 
+export function expandSlashCommandInput(input: string): {
+  isClearCommand: boolean;
+  expandedPrompt: string;
+  slashUsed?: string;
+} {
+  const trimmed = (input || '').trim();
+  if (!trimmed.startsWith('/')) {
+    return { isClearCommand: false, expandedPrompt: trimmed };
+  }
 
+  const parts = trimmed.split(/\s+/);
+  const cmd = parts[0].toLowerCase();
+  const rest = parts.slice(1).join(' ').trim();
 
+  if (cmd === '/clear') {
+    return { isClearCommand: true, expandedPrompt: '', slashUsed: '/clear' };
+  }
+  if (cmd === '/vm') {
+    return {
+      isClearCommand: false,
+      expandedPrompt: rest
+        ? `Ouvre le navigateur Cloud VM et recherche en direct : ${rest}`
+        : 'Ouvre le navigateur Cloud VM et résume les actualités Google News sur l’Intelligence Artificielle',
+      slashUsed: '/vm',
+    };
+  }
+  if (cmd === '/routine') {
+    return {
+      isClearCommand: false,
+      expandedPrompt: rest
+        ? `Planifie une routine récurrente : ${rest}`
+        : 'Planifie une routine tous les matins à 08:00 pour résumer mes e-mails Gmail vers Slack sur #general',
+      slashUsed: '/routine',
+    };
+  }
+  if (cmd === '/notion') {
+    return {
+      isClearCommand: false,
+      expandedPrompt: rest
+        ? `Crée une page dans mon Notion intitulée : ${rest}`
+        : 'Crée une page dans mon Notion, je veux que ce soit une page publique pour mon portfolio professionnel',
+      slashUsed: '/notion',
+    };
+  }
+  if (cmd === '/github') {
+    return {
+      isClearCommand: false,
+      expandedPrompt: rest
+        ? `Analyse en direct sur GitHub : ${rest}`
+        : 'Montre les dernières Pull Requests et issues ouvertes sur GitHub',
+      slashUsed: '/github',
+    };
+  }
+  if (cmd === '/slack') {
+    return {
+      isClearCommand: false,
+      expandedPrompt: rest
+        ? `Envoie un message sur Slack : ${rest}`
+        : 'Liste tous mes canaux Slack actifs',
+      slashUsed: '/slack',
+    };
+  }
+  if (cmd === '/docs') {
+    return {
+      isClearCommand: false,
+      expandedPrompt: rest
+        ? `Crée un document Google Docs : ${rest}`
+        : 'Crée un document Google Docs de synthèse exécutive',
+      slashUsed: '/docs',
+    };
+  }
+
+  return { isClearCommand: false, expandedPrompt: trimmed };
+}
+
+export type ChatFilterCategory = 'all' | 'tools' | 'routines' | 'vm';
+
+export function filterChatMessages(
+  messages: AgentChatMessage[],
+  searchQuery: string,
+  category: ChatFilterCategory = 'all'
+): AgentChatMessage[] {
+  const q = (searchQuery || '').trim().toLowerCase();
+
+  return messages.filter((msg) => {
+    if (category === 'tools') {
+      const isToolMsg =
+        msg.responseType === 'tool_connection' ||
+        (msg.structured?.suggestedTools && msg.structured.suggestedTools.length > 0) ||
+        /@(gmail|slack|github|notion|google_docs|google_calendar|linear|clickup|discord|reddit|outlook|youtube)/i.test(
+          msg.content
+        );
+      if (!isToolMsg) return false;
+    } else if (category === 'routines') {
+      const isRoutineMsg =
+        msg.responseType === 'routine' || Boolean(msg.structured?.routine);
+      if (!isRoutineMsg) return false;
+    } else if (category === 'vm') {
+      const isVmMsg =
+        msg.responseType === 'vm_action' || Boolean(msg.structured?.vmTrace);
+      if (!isVmMsg) return false;
+    }
+
+    if (!q) return true;
+    const inContent = (msg.content || '').toLowerCase().includes(q);
+    const inStructured = (msg.structured?.message || '').toLowerCase().includes(q);
+    const inAttachment = (msg.attachedFileName || '').toLowerCase().includes(q);
+    return inContent || inStructured || inAttachment;
+  });
+}
+
+export function parseMarkdownTableLines(lines: string[]): {
+  headers: string[];
+  rows: string[][];
+} | null {
+  const cleanLines = lines
+    .map((l) => l.trim())
+    .filter((l) => l.startsWith('|') && l.endsWith('|'));
+  if (cleanLines.length < 2) return null;
+
+  const parseCells = (row: string) =>
+    row
+      .slice(1, -1)
+      .split('|')
+      .map((c) => c.trim());
+
+  const headers = parseCells(cleanLines[0]);
+  if (headers.length === 0) return null;
+
+  const isSeparator = /^[\s|:-]+$/.test(cleanLines[1]);
+  const dataLines = isSeparator ? cleanLines.slice(2) : cleanLines.slice(1);
+  const rows = dataLines.map(parseCells);
+
+  return { headers, rows };
+}
+
+export function buildContextualFollowUpSuggestions(
+  agent: Pick<AgentConfig, 'name' | 'tools'>,
+  responseType: string,
+  messageContent: string
+): { label: string; prompt: string }[] {
+  const lower = (messageContent || '').toLowerCase();
+
+  if (responseType === 'vm_action') {
+    return [
+      {
+        label: 'Planifier chaque matin à 08:00',
+        prompt: 'Planifie cette veille en routine quotidienne à 08:00 sur #general',
+      },
+      {
+        label: 'Synthèse en tableau Markdown',
+        prompt: 'Présente ces résultats sous forme de tableau comparatif Markdown',
+      },
+      {
+        label: 'Ajouter à mon Portfolio Public',
+        prompt: '/notion Portfolio Professionnel',
+      },
+    ];
+  }
+
+  if (responseType === 'routine') {
+    return [
+      {
+        label: 'Vérifier mes canaux Slack',
+        prompt: 'Liste tous mes canaux Slack actifs',
+      },
+      {
+        label: 'Lancer une veille Cloud VM',
+        prompt: '/vm Intelligence Artificielle',
+      },
+      {
+        label: 'Voir mes dernières PRs GitHub',
+        prompt: '/github',
+      },
+    ];
+  }
+
+  if (lower.includes('portfolio') || lower.includes('notion')) {
+    return [
+      {
+        label: 'Extraire les actus IA dans la VM',
+        prompt: '/vm Agents IA Autonomes',
+      },
+      {
+        label: 'Analyser un dépôt GitHub',
+        prompt: '/github vercel/next.js',
+      },
+      {
+        label: 'Créer une routine quotidienne',
+        prompt: '/routine',
+      },
+    ];
+  }
+
+  return [
+    {
+      label: 'Veille Google News (Cloud VM)',
+      prompt: '/vm Intelligence Artificielle',
+    },
+    {
+      label: 'Planifier une routine 08:00',
+      prompt: '/routine',
+    },
+    {
+      label: agent.tools.includes('github')
+        ? 'Analyser mes PRs GitHub'
+        : 'Générer mon Portfolio Public',
+      prompt: agent.tools.includes('github') ? '/github' : '/notion',
+    },
+  ];
+}
+
+export interface ChatStarterCard {
+  id: string;
+  badge: string;
+  title: string;
+  description: string;
+  prompt: string;
+}
+
+export function buildEmptyChatStarterCards(
+  agent: Pick<AgentConfig, 'name' | 'tools'>
+): ChatStarterCard[] {
+  return [
+    {
+      id: 'starter_vm',
+      badge: 'Cloud VM Live',
+      title: 'Extraction Google News en direct',
+      description: `Ouvrir le navigateur Cloud VM de ${agent.name} et extraire les dernières actualités.`,
+      prompt: '/vm Intelligence Artificielle et Cloud Computing',
+    },
+    {
+      id: 'starter_routine',
+      badge: 'Inngest Cron',
+      title: 'Planifier une routine quotidienne',
+      description: 'Automatiser un résumé récurrent chaque matin à 08:00 vers Slack ou Gmail.',
+      prompt: '/routine',
+    },
+    {
+      id: 'starter_github',
+      badge: 'API Officielle',
+      title: 'Inspecter un dépôt GitHub en direct',
+      description: 'Interroger les dernières Pull Requests et issues ouvertes sur GitHub.',
+      prompt: '/github vercel/next.js',
+    },
+    {
+      id: 'starter_portfolio',
+      badge: 'Page Publique',
+      title: 'Créer mon Portfolio Public / Notion',
+      description: 'Générer une page de portfolio structurée avec lien public vérifié.',
+      prompt: '/notion Portfolio Professionnel',
+    },
+  ];
+}

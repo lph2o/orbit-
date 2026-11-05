@@ -106,8 +106,8 @@ export default function CreateAgentPage() {
   };
 
   return (
-    <div className="min-h-screen overflow-y-auto py-8 px-6 bg-slate-50/40 flex items-start justify-center">
-      <div className="w-full max-w-4xl rounded-2xl border border-slate-200 bg-white p-6 shadow-xs space-y-6">
+    <div className="min-h-full overflow-y-auto py-4 px-3.5 sm:py-8 sm:px-6 bg-slate-50/40 flex items-start justify-center">
+      <div className="w-full max-w-4xl rounded-2xl border border-slate-200 bg-white p-4 sm:p-6 shadow-xs space-y-5 sm:space-y-6">
         <div className="flex items-center justify-between border-b border-slate-200 pb-4">
           <div>
             <h1 className="text-lg font-bold text-slate-900">
